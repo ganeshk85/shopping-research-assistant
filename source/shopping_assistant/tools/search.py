@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional, Protocol, Sequence
 from urllib.parse import urlparse
 
@@ -132,6 +133,19 @@ def looks_like_product_url(url: str) -> bool:
     return len(parsed.path.strip("/")) > 3
 
 
+def canonical_listing_url(url: str) -> str:
+    """Drop the fragment always, and the query string for known retailers.
+
+    Every supported retailer identifies the product in the URL path, so query strings
+    are only tracking/variant noise (e.g. Walmart '?classType=VARIANT&athbdg=...').
+    This prevents the same product being listed twice. Brand-store URLs keep their query.
+    """
+    url = url.split("#", 1)[0]
+    if find_retailer(url) is not None:
+        url = url.split("?", 1)[0]
+    return url
+
+
 def find_retailer(url: str) -> Optional[Retailer]:
     host = _domain(url)
     return next((r for r in RETAILERS if r.matches(host)), None)
@@ -160,13 +174,43 @@ def model_tokens(product_name: str) -> list[str]:
     return tokens
 
 
+# Words that don't identify a specific product, ignored when matching by name.
+_GENERIC_WORDS = frozenset(
+    "the a an and or with for by of in new wireless bluetooth true noise cancelling canceling "
+    "headphones headphone earbuds earbud earphones over ear on in-ear gen generation edition "
+    "model version black white silver".split()
+)
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text.lower())
+
+
+def name_words(product_name: str) -> list[str]:
+    """Identifying words of a product name, e.g. 'Soundcore Liberty 5 Pro' → [soundcore, liberty, 5, pro]."""
+    return [w for w in _words(product_name) if w not in _GENERIC_WORDS]
+
+
 def matches_model(product_name: str, *texts: str) -> bool:
-    """True if every model token appears in the URL/title (stops WF-1000XM5 matching WH-1000XM5)."""
+    """Does a search result / page (URL, title) refer to this exact product?
+
+    - Names with a model number (e.g. 'Sony WH-1000XM5'): every model token must appear,
+      which stops WF-1000XM5 matching WH-1000XM5.
+    - Otherwise (e.g. 'Soundcore Liberty 5 Pro'): every identifying word must appear,
+      so 'Liberty 4 Pro' or unrelated products don't match. Words of 4+ letters may
+      also match inside joined text ('quietcomfort' in 'QuietComfort').
+    """
+    joined = " ".join(t for t in texts if t)
     tokens = model_tokens(product_name)
-    if not tokens:
+    if tokens:
+        haystack = _normalize(joined)
+        return all(t in haystack for t in tokens)
+    words = name_words(product_name)
+    if not words:
         return True
-    haystack = _normalize(" ".join(texts))
-    return all(t in haystack for t in tokens)
+    present = set(_words(joined))
+    haystack = _normalize(joined)
+    return all(w in present or (len(w) >= 4 and w in haystack) for w in words)
 
 
 def extract_price_hint(text: str) -> Optional[float]:
@@ -255,17 +299,26 @@ class ProductSearch:
         self._collect(results, product_name, domains, listings, seen)
 
         if fill_missing:
-            for domain in domains:
-                if any(_matches_domain(_domain(l.url), domain) for l in listings):
-                    continue
-                extra = self._search(
-                    query,
-                    search_depth="basic",
-                    max_results=per_retailer_results,
-                    include_domains=[domain],
-                    country="canada",
-                )
-                self._collect(extra, product_name, [domain], listings, seen)
+            missing = [
+                d for d in domains if not any(_matches_domain(_domain(l.url), d) for l in listings)
+            ]
+
+            def targeted(domain: str) -> list[dict]:
+                try:
+                    return self._search(
+                        query,
+                        search_depth="basic",
+                        max_results=per_retailer_results,
+                        include_domains=[domain],
+                        country="canada",
+                    )
+                except Exception:  # one retailer's search failing shouldn't lose the rest
+                    return []
+
+            # Parallel I/O; results are merged in `missing` order so output is deterministic.
+            with ThreadPoolExecutor(max_workers=4) as pool:
+                for domain, extra in zip(missing, pool.map(targeted, missing)):
+                    self._collect(extra, product_name, [domain], listings, seen)
         return listings
 
     @staticmethod
@@ -278,7 +331,7 @@ class ProductSearch:
     ) -> None:
         """Validate raw results and append new product listings in place."""
         for r in results:
-            url = (r.get("url") or "").split("#", 1)[0]
+            url = canonical_listing_url(r.get("url") or "")
             host = _domain(url)
             if not url or url in seen or not any(_matches_domain(host, d) for d in domains):
                 continue

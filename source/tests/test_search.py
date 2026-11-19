@@ -3,11 +3,13 @@ import pytest
 from shopping_assistant.config import ConfigError
 from shopping_assistant.tools.search import (
     ProductSearch,
+    canonical_listing_url,
     extract_price_hint,
     is_blocked_url,
     looks_like_product_url,
     matches_model,
     model_tokens,
+    name_words,
     retailer_name,
 )
 
@@ -134,10 +136,39 @@ def test_model_tokens(name, tokens):
     assert model_tokens(name) == tokens
 
 
+@pytest.mark.parametrize(
+    "texts, ok",
+    [
+        # Regression: 2026-11-18 live run matched these to "Soundcore Liberty 5 Pro".
+        (("https://www.canadacomputers.com/en/on-ear-headphones/259482/ican-md033-bk-wireless-earbuds-with-noise-cancelling-mic-md033-bk.html",
+          "iCan MD033 Wireless Earbuds with Noise Cancelling Mic"), False),
+        (("https://www.dell.com/en-ca/shop/monitors/apd/alienware-27-gaming-monitor-aw2725dm/aw2725dm/-",
+          "Alienware 27 Gaming Monitor - AW2725DM"), False),
+        (("https://www.amazon.ca/dp/B0XXXXXXX1", "soundcore Liberty 4 Pro Noise Cancelling Earbuds"), False),
+        (("https://www.amazon.ca/dp/B0XXXXXXX2", "soundcore Liberty 5 Pro Wireless Earbuds, Adaptive ANC"), True),
+        (("https://www.soundcore.com/ca/products/liberty-5-pro", ""), True),  # brand store: brand in the host counts
+        (("https://www.soundcore.com/ca/products/liberty-4-pro", ""), False),
+    ],
+)
+def test_matches_model_by_name_words(texts, ok):
+    assert matches_model("Soundcore Liberty 5 Pro", *texts) is ok
+
+
+def test_name_words_and_joined_words():
+    assert name_words("Bose QuietComfort Ultra Earbuds (2nd Gen)") == ["bose", "quietcomfort", "ultra", "2nd"]
+    # Long words also match across spacing differences, in either direction.
+    assert matches_model("Bose QuietComfort Ultra Earbuds (2nd Gen)", "Bose Quiet Comfort Ultra Earbuds 2nd Gen") is True
+    assert matches_model("Bose QuietComfort Ultra Earbuds (2nd Gen)", "BoseQuietComfortUltraEarbuds-2nd-Gen") is True
+    assert matches_model("Bose QuietComfort Ultra Earbuds (2nd Gen)", "Bose QuietComfort Ultra Earbuds") is False  # 1st gen
+    assert matches_model("Wireless Earbuds", "anything") is True  # nothing identifying: can't filter
+
+
 def test_matches_model_rejects_sibling_model():
     assert matches_model("Sony WH-1000XM5", "https://www.sony.ca/p/wh1000xm5-b")
     assert not matches_model("Sony WH-1000XM5", "https://www.sony.ca/p/wf1000xm5-b", "WF-1000XM5 earbuds")
-    assert matches_model("Bose QuietComfort Ultra", "https://www.bose.ca/anything")
+    # Names without a model number must match by their identifying words.
+    assert not matches_model("Bose QuietComfort Ultra", "https://www.bose.ca/anything")
+    assert matches_model("Bose QuietComfort Ultra", "https://www.bose.ca/en/p/quietcomfort-ultra-headphones")
 
 
 def test_find_retail_listings_filters_and_dedupes():
@@ -199,6 +230,32 @@ def test_fill_missing_can_be_disabled():
     fake = DomainAwareTavily([])
     ProductSearch(settings=None, client=fake).find_retail_listings("Sony WH-1000XM5", fill_missing=False)
     assert len(fake.calls) == 1
+
+
+def test_duplicate_listing_with_tracking_params_is_merged():
+    """Regression, 2026-11-18 CLI run: the same Walmart item was listed twice."""
+    base = "https://www.walmart.ca/en/ip/Sony-WH-1000XM6-Brand-New/7FIUKUA6U033"
+    fake = FakeTavily([
+        {"title": "Sony WH-1000XM6", "url": base, "content": ""},
+        {"title": "Sony WH-1000XM6", "url": base + "?classType=VARIANT&athbdg=L3021", "content": ""},
+        {"title": "Sony WH-1000XM6", "url": "https://electronics.sony.ca/p/wh1000xm6?colour=black", "content": ""},
+    ])
+    listings = ProductSearch(settings=None, client=fake).find_retail_listings(
+        "Sony WH-1000XM6", brand_domains=["sony.ca"], fill_missing=False
+    )
+    assert [l.url for l in listings] == [base, "https://electronics.sony.ca/p/wh1000xm6?colour=black"]
+
+
+@pytest.mark.parametrize(
+    "url, expected",
+    [
+        ("https://www.amazon.ca/dp/B09XS7JWHH?th=1#reviews", "https://www.amazon.ca/dp/B09XS7JWHH"),
+        ("https://www.costco.ca/.product.4000027281.html?bvstate=pg", "https://www.costco.ca/.product.4000027281.html"),
+        ("https://shop.brand.ca/p/x?variant=2#top", "https://shop.brand.ca/p/x?variant=2"),
+    ],
+)
+def test_canonical_listing_url(url, expected):
+    assert canonical_listing_url(url) == expected
 
 
 def test_missing_tavily_key_names_the_key(settings_factory):

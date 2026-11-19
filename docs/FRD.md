@@ -33,7 +33,8 @@ Two independent LangGraph graphs share a local SQLite watchlist:
 ### FR-1 Intent routing (`understand_intent`) — BR-1, BR-2, BR-3
 - FR-1.1 Classify the latest user message, with conversation history, as `explore_or_refine` or `finalize_product`, using LLM structured output.
 - FR-1.2 `finalize_product` requires an explicit choice (e.g. "Let's go with the Sony WH-1000XM5", "I've decided on option 2"). Ordinal references resolve against the most recent comparison.
-- FR-1.3 If the choice is ambiguous, route to `explore_or_refine` and ask the user to confirm.
+- FR-1.3 If the choice is ambiguous (or an option number is out of range), ask the user to confirm instead of guessing (`confirm_choice`).
+- FR-1.4 A question about options already shown that does not change the criteria (`ask_followup`, e.g. "how does comfort compare between 1 and 2?") gets a focused search and a direct answer. The numbered list is **not** replaced, so option numbers stay stable. _Added 2026-11-18 after a live run where a re-ranked list made "option 2" mean a different product._
 
 **Acceptance:** "Option 2" after a 4-item comparison finalizes candidate #2; "what about battery life?" routes to research.
 
@@ -48,20 +49,31 @@ Two independent LangGraph graphs share a local SQLite watchlist:
 
 ### FR-3 Locate retail listings (`locate_retail_listings`) — BR-4
 - FR-3.1 Search Tavily for the finalized model across the supported Canadian retailers (Amazon.ca, Walmart.ca, Staples.ca, Costco.ca, Dell Canada, Newegg.ca, Canada Computers, Canadian Tire) and the official brand store. Run one combined search, then a targeted search for each retailer with no results. Each retailer has a product-URL pattern; only matching pages are listings. Best Buy Canada and RONA are excluded in v1 (they block the scraper) and must never be returned as listings.
-- FR-3.2 Produce `RetailListing` objects with direct product URLs (not search/category pages).
+- FR-3.2 Produce `RetailListing` objects with direct product URLs (not search/category pages). Strip query strings for known retailers so the same product isn't listed twice.
 - FR-3.3 **Verify the current price and stock of each listing with the Crawl4AI scraper** (see FR-6). If verification fails, keep the search-derived price and flag it as unverified.
 - FR-3.4 If no listings are found, tell the user and return to research.
+- FR-3.5 **Listings must be the finalized product.** _Added 2026-11-18 after a live run listed unrelated earbuds and monitors._ A listing is dropped when:
+  - its search title/URL doesn't match: names with a model number (e.g. `WH-1000XM5`) need every model token; other names (e.g. "Soundcore Liberty 5 Pro") need every identifying word, ignoring generic words like "wireless";
+  - the product name on the scraped page itself doesn't match; or
+  - its price is under 40% or over 250% of the research estimate (accessories, bundles, bad snippets).
+  The reply says how many results were skipped.
+- FR-3.6 Scrape at most 8 listings (one per retailer first, at most 3 per retailer), 3 at a time.
 
 ### FR-4 Confirm tracking terms (`confirm_tracking_terms`) — BR-5
 - FR-4.1 Pause execution with LangGraph `interrupt()` and show the listings: retailer, price, stock, verified flag, URL.
 - FR-4.2 The user selects one or more listings to monitor.
 - FR-4.3 The user sets a target price; the default is 10% below the lowest selected current price (rounded to 2 decimals).
-- FR-4.4 The user may cancel; nothing is saved.
+- FR-4.4 The user may cancel; nothing is saved. Sending a new chat message while a confirmation is pending cancels it explicitly. An invalid answer saves nothing.
+- FR-4.5 A pending confirmation survives restarts. Resuming the thread shows it again.
+
+### FR-4A Purchase requests (`decline_purchase`) — BR-10, BRL-1
+- FR-4A.1 Requests to buy, order, check out, pay or add to cart are routed to a fixed reply that declines and offers price tracking instead. No search or tracking runs.
 
 ### FR-5 Save to watchlist (`save_to_watchlist`) — BR-5, BR-7
 - FR-5.1 Insert one `tracked_items` row per selected listing with `initial_price = lowest_price_seen = current price`, `target_price`, `status = 'active'`, and `last_notified_price = NULL`.
 - FR-5.2 Insert an initial `price_history` row.
 - FR-5.3 Confirm to the user that monitoring is active.
+- FR-5.4 A URL that is already on the watchlist is not added again. The reply says it's already tracked.
 
 ### FR-5A Conversation persistence — BR-2
 - FR-5A.1 Checkpoint Graph 1 state with `SqliteSaver` in `checkpoints.db`, keyed by a thread ID.

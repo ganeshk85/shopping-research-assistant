@@ -2,12 +2,12 @@
 
 Living tracker for the Shopping Research Assistant. Update after each step or decision.
 
-_Last updated: 2026-11-16_
+_Last updated: 2026-11-18_
 
 ## Build progress
 - [x] **Step 1 — Project setup & data layer:** `pyproject.toml`, `.env.example`, `README.md`, `config.py`, `models.py`, `database.py`, DB tests (8 passing; installs fine on Python 3.14). `database.record_price_check` returns the previous lowest price (spec fix #1).
 - [x] **Step 2 — Tools layer:** `tools/search.py` (Tavily), `tools/scraper.py` (Crawl4AI + JSON-LD), `tools/notifier.py`. 63 tests passing, all offline.
-- [ ] **Step 3 — Research graph:** `graphs/research_graph.py` (multi-turn loop, intent routing, `interrupt()` confirmation, SqliteSaver)
+- [x] **Step 3 — Research graph:** `graphs/research_graph.py` (Sprints 2-3): the multi-turn loop, intent routing, follow-up answers, finalization, purchase decline, retail lookup with verification, the `interrupt()` confirmation, saving to the watchlist, and SqliteSaver.
 - [ ] **Step 4 — Monitor graph:** `graphs/monitor_graph.py` (async scrape, drop evaluation, LLM alert)
 - [ ] **Step 5 — CLI & tests:** `main.py` menu, APScheduler wiring, `tests/test_price_logic.py`
 
@@ -18,7 +18,31 @@ _Last updated: 2026-11-16_
 - [x] `docs/user-stories.md` (23 stories, 84 points), `docs/sprint-plan.md` (1-week sprints; v1 target 2026-12-20)
 
 ## Current sprint
-**Sprint 1 (2026-11-16 → 11-22): Tools layer.** Stories US-11, US-12, US-16, US-22 (18 points). See [docs/sprint-plan.md](docs/sprint-plan.md).
+**Sprint 3 (branch `sprint-2-research-graph`, uncommitted with Sprint 2): Listings and tracking setup.** Stories US-05 to US-08, US-21 (18 points).
+- [x] US-05 Listings: `locate_retail_listings` runs `find_retail_listings`, then `select_for_verification` (≤8, retailer-diverse), then the scraper (3 at a time), then `build_listings`. Scraped prices win over snippets; unverified prices are labelled.
+- [x] US-06 Confirm: `confirm_tracking_terms` calls `interrupt()` with the listings and a suggested target. `ResearchSession.confirm(TrackingDecision)` resumes it. The default target is 10% below the lowest *selected* price.
+- [x] US-07 Cancel: cancel, an invalid answer, or a new chat message while pending all save nothing.
+- [x] US-08 Save: one item per listing plus a baseline history row; URLs already on the watchlist are skipped. The confirmation names each retailer, price and target.
+- [x] US-21 Never buys: a `purchase_request` intent goes to a fixed decline reply; cart/checkout URLs are dropped in `build_listings` as well as in search.
+- [x] CLI: progress line during the listing lookup; selection and target prompts with validation; resumed threads show a pending confirmation again.
+- [x] **Live-run fixes, 2026-11-18:**
+  - **Wrong products:** "Soundcore Liberty 5 Pro" listed iCan earbuds at CA$9.88 and Dell monitors. `matches_model` now uses name words when there's no model number, plus a page-title check (`ScrapedPriceResult.page_title`) and a price plausibility check (40-250% of the estimate). FRD FR-3.5.
+  - **Speed:** the listing step went from 118s to ~43s (parallel per-retailer searches, scraping concurrency 3).
+  - **Duplicates:** the same Walmart item was listed twice; `canonical_listing_url` strips query strings for known retailers.
+- [x] Live CLI run (Sony WH-1000XM6): 8 listings from 6 retailers, 5 verified; invalid input re-prompted; custom target saved.
+- [x] Tests: 189 passing, offline.
+
+**Sprint 2 (same branch, uncommitted): Research conversation.** Stories US-01, US-02, US-03, US-04 (19 points).
+- [x] US-01 Comparison: `research_and_compare` builds a grounded `ResearchComparison` (3-4 candidates, sources, at most one question) from Tavily review results. Rendered as plain text for the CLI.
+- [x] US-02 Refine: the intent LLM sees the full history plus the numbered options and writes a combined `search_query`.
+  - **Live-run fix:** follow-up questions now route to `answer_followup`, which leaves the list's numbering unchanged (FRD FR-1.4).
+- [x] US-03 Resume: SqliteSaver on `checkpoints.db`, plus a `research_threads` table (title, finalized product). The CLI lists threads and shows recent history.
+- [x] US-04 Finalize: `resolve_choice` is deterministic. It maps option numbers and names; out-of-range numbers or ambiguous choices ask instead of guessing.
+- [x] `research.ResearchSession` is the UI-facing service. `main.py` has a temporary chat loop on menu option 1.
+- [x] Tests: 124 passing, offline (fake LLM and search).
+- [x] Live demo, 2026-11-18 (4 turns plus a restart): research ~17-21s per turn, follow-up ~9s, finalize ~2s. The thread resumed with its chosen product after the restart.
+
+**Sprint 1 (done 2026-11-16, commit `18a0c86`): Tools layer.** Stories US-11, US-12, US-16, US-22 (18 points). See [docs/sprint-plan.md](docs/sprint-plan.md).
 - [x] US-11 Reliable price extraction: `scraper.py` reads JSON-LD (Product/Offer/AggregateOffer/@graph/priceSpecification, repairs trailing commas), then falls back to meta tags / itemprop / retailer CSS (Amazon, Best Buy) / generic. Parses EN and FR-CA price formats.
 - [x] US-12 Failed checks isolated: crawl errors, HTTP ≥400 and empty pages return `failed` without stopping other URLs.
 - [x] US-16 Notifiers: Console, Webhook (Discord/Slack/Telegram `?chat_id=`/generic), Resend, SMTP (STARTTLS, or SSL on 465). Failures raise `NotificationError`.
@@ -64,6 +88,11 @@ _Last updated: 2026-11-16_
 | 2026-11-15 | Fallback extraction uses BeautifulSoup on the HTML returned by Crawl4AI (not `JsonCssExtractionStrategy`). It's deterministic, testable with fixtures, and retailer selectors live in one dict (`_RETAILER_CSS`). |
 | 2026-11-15 | `search.looks_like_product_url` / `is_blocked_url` reject cart, checkout, login, search and category URLs (supports US-21). |
 | 2026-11-15 | Notifier interface is `send(subject, body)` and raises `NotificationError`; monitor updates `last_notified_price` only on success. |
+| 2026-11-18 | Structured output uses `with_structured_output(..., method="json_schema", include_raw=True)` (native structured outputs). Never the default `function_calling`: Sonnet 5.5 rejects forced `tool_choice` with a 400. `call_structured` checks for `stop_reason == "refusal"` and parse errors. |
+| 2026-11-18 | Server-side refusal fallback on by default: `betas=["server-side-fallback-2026-07-01"]` with `model_kwargs={"fallbacks": "default"}`. Live-verified through LangChain. |
+| 2026-11-18 | Effort: intent routing `low` (max_tokens 4k); research and follow-ups `medium` (max_tokens 16k). The model stays `LLM_MODEL` (currently `claude-sonnet-5-5`, the user's choice to confirm; Opus 5.5 is the alternative). |
+| 2026-11-18 | Graph state stores comparisons and products as plain dicts (`model_dump()`), not Pydantic objects, so checkpoints serialize safely. |
+| 2026-11-18 | Each terminal node sets `last_action` (researched / answered / finalized / asked / error); callers use this, not `intent`, to see what a turn did. |
 
 ## Spec corrections (vs. project-proposal.md; see FRD)
 1. Capture the previous `lowest_price_seen` **before** updating it; otherwise "new low" can never fire.
@@ -83,4 +112,5 @@ _Last updated: 2026-11-16_
 - APScheduler only runs while the CLI process is alive (acceptable for v1; documented).
 
 ## Next action
-Sprint 2: research graph (US-01 – US-04). `ANTHROPIC_API_KEY` is in `.env` and was verified 2026-11-18 with a test call through `langchain-anthropic` on `claude-sonnet-5-5`. Unit tests mock the LLM.
+1. User reviews Sprints 2-3 and commits.
+2. Sprint 4: monitor and alerts (US-13 wiring, US-14, US-15, US-17, US-10). Graph 2 is async: `fetch_active_trackers` → `scrape_current_prices` (`record_price_check` returns the previous low) → `should_alert()` → alert. Reuse `ScrapedPriceResult.page_title` to catch a listing page that changed to a different product.
