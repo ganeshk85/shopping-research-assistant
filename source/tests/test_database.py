@@ -83,6 +83,51 @@ def test_delete_cascades_history(db_path: Path) -> None:
     assert db.get_price_history(db_path, item_id) == []
 
 
+def test_out_of_stock_price_is_recorded_but_not_the_low(db_path: Path) -> None:
+    item_id = _add(db_path)
+    assert db.record_price_check(db_path, item_id, 350.0, False) == 449.99
+    assert db.get_tracked_item(db_path, item_id).lowest_price_seen == 449.99
+    assert db.latest_price(db_path, item_id) == 350.0
+
+
+def test_check_health_tracking(db_path: Path) -> None:
+    item_id = _add(db_path)
+    item = db.get_tracked_item(db_path, item_id)
+    assert item.last_check_at is None and item.consecutive_failures == 0
+    db.mark_check_failed(db_path, item_id, "blocked")
+    db.mark_check_failed(db_path, item_id, "timeout")
+    item = db.get_tracked_item(db_path, item_id)
+    assert item.consecutive_failures == 2 and item.last_check_error == "timeout" and item.last_check_at
+    db.mark_check_ok(db_path, item_id)
+    item = db.get_tracked_item(db_path, item_id)
+    assert item.consecutive_failures == 0 and item.last_check_error is None
+
+
+def test_migration_upgrades_a_v0_database(tmp_path: Path) -> None:
+    """A watchlist.db created before Sprint 5 (no health columns) upgrades in place, keeping data."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    conn = sqlite3.connect(path)
+    conn.executescript("""
+        CREATE TABLE tracked_items (id INTEGER PRIMARY KEY AUTOINCREMENT, product_name TEXT NOT NULL,
+            retailer TEXT NOT NULL, url TEXT NOT NULL, currency TEXT NOT NULL DEFAULT 'CAD',
+            initial_price REAL NOT NULL, target_price REAL NOT NULL, lowest_price_seen REAL NOT NULL,
+            last_notified_price REAL, status TEXT NOT NULL DEFAULT 'active', created_at TEXT NOT NULL);
+        INSERT INTO tracked_items (product_name, retailer, url, initial_price, target_price, lowest_price_seen, created_at)
+            VALUES ('Old item', 'Amazon.ca', 'https://www.amazon.ca/dp/B000000001', 100, 90, 100, '2026-11-15T00:00:00+00:00');
+    """)
+    conn.commit()
+    conn.close()
+
+    db.init_db(path)
+    db.init_db(path)  # idempotent
+    item = db.list_tracked_items(path)[0]
+    assert item.product_name == "Old item" and item.consecutive_failures == 0 and item.last_check_at is None
+    db.mark_check_failed(path, item.id, "x")
+    assert db.get_tracked_item(path, item.id).consecutive_failures == 1
+
+
 def test_invalid_status_rejected(db_path: Path) -> None:
     item_id = _add(db_path)
     import sqlite3

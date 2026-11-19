@@ -86,6 +86,10 @@ class TrackedItem(BaseModel):
     last_notified_price: Optional[float] = None
     status: ItemStatus = "active"
     created_at: datetime
+    # Monitor health (Sprint 5): last attempt and failure streak.
+    last_check_at: Optional[datetime] = None
+    last_check_error: Optional[str] = None
+    consecutive_failures: int = 0
 
 
 class PriceHistoryEntry(BaseModel):
@@ -166,14 +170,33 @@ class ResearchState(TypedDict, total=False):
     saved_item_ids: list[int]
 
 
-class PriceCheck(TypedDict):
+AlertReason = Literal["target_reached", "new_low"]
+
+
+class PriceCheck(BaseModel):
+    """One successful price check of a tracked item (Graph 2)."""
+
     item: TrackedItem
-    result: ScrapedPriceResult
-    previous_lowest: float
+    price: float
+    in_stock: bool
+    previous_price: Optional[float]  # last recorded price before this check
+    previous_lowest: float  # lowest_price_seen BEFORE this check (FR-6.6)
+    reason: Optional[AlertReason] = None  # set when this check should alert
+
+
+class FailedCheck(BaseModel):
+    item_id: int
+    product_name: str
+    retailer: str
+    error: str
 
 
 class MonitorState(TypedDict, total=False):
+    """Graph 2 state (in-memory; the monitor graph has no checkpointer)."""
+
     items: list[TrackedItem]
     checks: list[PriceCheck]
+    failures: list[FailedCheck]
     alerts: list[PriceCheck]
     sent_alert_ids: list[int]
+    failed_alert_ids: list[int]
