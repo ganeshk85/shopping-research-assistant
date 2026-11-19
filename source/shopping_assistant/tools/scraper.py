@@ -267,8 +267,31 @@ def parse_fallback(html: str, url: str = "") -> Optional[ParsedOffer]:
 # ---------------------------------------------------------------------------
 
 
+def extract_page_title(html: str) -> Optional[str]:
+    """Product name shown on the page: JSON-LD Product name, else og:title, else <title>."""
+    soup = BeautifulSoup(html, "lxml")
+    for node in (n for block in _load_json_ld_blocks(soup) for n in _walk(block)):
+        if _types(node) & {"product", "productgroup"} and isinstance(node.get("name"), str):
+            return node["name"].strip() or None
+    og = soup.select_one('meta[property="og:title"]')
+    if og is not None and og.get("content", "").strip():
+        return og["content"].strip()
+    if soup.title and soup.title.get_text(strip=True):
+        return soup.title.get_text(strip=True)
+    return None
+
+
 def extract_price(html: str, url: str, default_currency: str = "CAD") -> ScrapedPriceResult:
     """Run JSON-LD extraction, then the fallback. Never raises on bad HTML."""
+    try:
+        title = extract_page_title(html)
+    except Exception:
+        title = None
+    result = _extract_price(html, url, default_currency)
+    return result.model_copy(update={"page_title": title})
+
+
+def _extract_price(html: str, url: str, default_currency: str) -> ScrapedPriceResult:
     try:
         offer = parse_json_ld(html)
         method = "json-ld"

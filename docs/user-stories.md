@@ -56,6 +56,7 @@
 - **Given** a comparison is shown, **when** I say "I mostly use them on flights, battery life matters most", **then** the next comparison reflects that criterion.
 - Earlier criteria (e.g. budget) are kept unless I change them.
 - Questions like "what about battery life?" never finalize a product.
+- A follow-up question about the options shown is answered directly and does not renumber the list (FR-1.4).
 
 ### US-03 Resume a previous research session
 **As a** shopper, **I want to** continue a research conversation after closing the app, **so that** I don't have to start over.

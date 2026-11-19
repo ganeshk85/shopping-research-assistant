@@ -35,6 +35,16 @@ CREATE TABLE IF NOT EXISTS price_history (
 );
 
 CREATE INDEX IF NOT EXISTS idx_price_history_item ON price_history(item_id, checked_at);
+
+-- Registry of research conversations (US-03). Message history itself lives in
+-- the LangGraph checkpoint DB; this table only lists threads for the CLI.
+CREATE TABLE IF NOT EXISTS research_threads (
+    thread_id         TEXT PRIMARY KEY,
+    title             TEXT NOT NULL,
+    finalized_product TEXT,
+    created_at        TEXT NOT NULL,
+    updated_at        TEXT NOT NULL
+);
 """
 
 
@@ -100,6 +110,15 @@ def add_tracked_item(
             (item_id, initial_price, int(in_stock), now),
         )
     return item_id
+
+
+def find_tracked_item_by_url(db_path: Path, url: str) -> Optional[TrackedItem]:
+    """The tracked item for this URL (any status), if one exists."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM tracked_items WHERE url = ? ORDER BY id DESC LIMIT 1", (url,)
+        ).fetchone()
+    return _row_to_item(row) if row else None
 
 
 def get_tracked_item(db_path: Path, item_id: int) -> Optional[TrackedItem]:
@@ -170,6 +189,31 @@ def update_last_notified(db_path: Path, item_id: int, price: float) -> None:
         conn.execute(
             "UPDATE tracked_items SET last_notified_price = ? WHERE id = ?", (price, item_id)
         )
+
+
+def upsert_research_thread(
+    db_path: Path, thread_id: str, title: str, finalized_product: Optional[str] = None
+) -> None:
+    """Create a thread entry, or bump updated_at (and set finalized_product if given)."""
+    now = _now()
+    with connect(db_path) as conn:
+        conn.execute(
+            """INSERT INTO research_threads (thread_id, title, finalized_product, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(thread_id) DO UPDATE SET
+                   updated_at = excluded.updated_at,
+                   finalized_product = COALESCE(excluded.finalized_product, research_threads.finalized_product)""",
+            (thread_id, title[:80], finalized_product, now, now),
+        )
+
+
+def list_research_threads(db_path: Path, limit: int = 20) -> list[dict]:
+    """Most recently updated threads first."""
+    with connect(db_path) as conn:
+        rows = conn.execute(
+            "SELECT * FROM research_threads ORDER BY updated_at DESC LIMIT ?", (limit,)
+        ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def get_price_history(db_path: Path, item_id: int) -> list[PriceHistoryEntry]:

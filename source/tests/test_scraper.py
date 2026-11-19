@@ -98,6 +98,19 @@ def test_out_of_stock_page_without_price_explains_why():
     assert r.error == "out of stock (no price shown)"
 
 
+@pytest.mark.parametrize(
+    "fixture, title",
+    [
+        ("jsonld_single_offer.html", "Sony WH-1000XM5"),  # JSON-LD Product name
+        ("amazon_css.html", "Amazon.ca: Sony WH-1000XM5"),  # <title>
+        ("newegg_instock.html", "Samsung 990 PRO 2TB - Newegg.ca"),
+        ("generic_css_fr_out_of_stock.html", None),
+    ],
+)
+def test_page_title_is_captured(fixture, title):
+    assert extract_price(html(fixture), BRAND).page_title == title
+
+
 def test_no_price_is_failed():
     r = extract_price(html("no_price.html"), AMAZON)
     assert r.extraction_method == "failed"
