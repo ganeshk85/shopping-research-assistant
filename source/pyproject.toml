@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "shopping-assistant"
+version = "0.1.0"
+description = "Conversational shopping research assistant with price tracking (never purchases)."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=0.2",
+    "langgraph-checkpoint-sqlite>=2.0",
+    "langchain>=0.3",
+    "langchain-anthropic>=0.3",
+    "pydantic>=2.7",
+    "python-dotenv>=1.0",
+    "tavily-python>=0.5",
+    "crawl4ai>=0.6",
+    "apscheduler>=3.10,<4",
+    "httpx>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+shopping-assistant = "shopping_assistant.main:main"
+
+[tool.setuptools.packages.find]
+include = ["shopping_assistant*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
