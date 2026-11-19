@@ -48,8 +48,24 @@ CREATE TABLE IF NOT EXISTS research_threads (
 """
 
 
+# Columns added after v0 (Sprint 5). Applied with ALTER TABLE so existing databases
+# upgrade in place; each entry is (column, SQL type/default).
+_TRACKED_ITEM_MIGRATIONS = (
+    ("last_check_at", "TEXT"),  # last monitor attempt, success or failure
+    ("last_check_error", "TEXT"),  # NULL when the last attempt succeeded
+    ("consecutive_failures", "INTEGER NOT NULL DEFAULT 0"),
+)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    existing = {row["name"] for row in conn.execute("PRAGMA table_info(tracked_items)")}
+    for column, decl in _TRACKED_ITEM_MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE tracked_items ADD COLUMN {column} {decl}")
 
 
 @contextmanager
@@ -76,6 +92,7 @@ def init_db(db_path: Optional[Path] = None) -> Path:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with connect(db_path) as conn:
         conn.executescript(SCHEMA)
+        _migrate(conn)
     return db_path
 
 
@@ -164,7 +181,9 @@ def record_price_check(
     """Log a price check and update lowest_price_seen.
 
     Returns the *previous* lowest_price_seen (captured before the update),
-    which drop evaluation needs to detect a new low (FRD FR-6.6).
+    which drop evaluation needs to detect a new low (FRD FR-6.6). Only in-stock
+    prices can become the new low: a price you couldn't buy at shouldn't block the
+    "new low" alert when stock returns.
     """
     with connect(db_path) as conn:
         row = conn.execute(
@@ -177,11 +196,43 @@ def record_price_check(
             "INSERT INTO price_history (item_id, price, in_stock, checked_at) VALUES (?, ?, ?, ?)",
             (item_id, price, int(in_stock), _now()),
         )
-        if price < previous_lowest:
+        if in_stock and price < previous_lowest:
             conn.execute(
                 "UPDATE tracked_items SET lowest_price_seen = ? WHERE id = ?", (price, item_id)
             )
     return previous_lowest
+
+
+def mark_check_ok(db_path: Path, item_id: int) -> None:
+    """Record a successful monitor check (clears any failure streak)."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """UPDATE tracked_items
+               SET last_check_at = ?, last_check_error = NULL, consecutive_failures = 0
+               WHERE id = ?""",
+            (_now(), item_id),
+        )
+
+
+def mark_check_failed(db_path: Path, item_id: int, error: str) -> None:
+    """Record a failed monitor check so repeated failures are visible in the watchlist."""
+    with connect(db_path) as conn:
+        conn.execute(
+            """UPDATE tracked_items
+               SET last_check_at = ?, last_check_error = ?, consecutive_failures = consecutive_failures + 1
+               WHERE id = ?""",
+            (_now(), error[:300], item_id),
+        )
+
+
+def latest_price(db_path: Path, item_id: int) -> Optional[float]:
+    """Most recently recorded price for an item (None if it has no history)."""
+    with connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT price FROM price_history WHERE item_id = ? ORDER BY checked_at DESC, id DESC LIMIT 1",
+            (item_id,),
+        ).fetchone()
+    return float(row["price"]) if row else None
 
 
 def update_last_notified(db_path: Path, item_id: int, price: float) -> None:

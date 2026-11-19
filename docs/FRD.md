@@ -87,7 +87,8 @@ Two independent LangGraph graphs share a local SQLite watchlist:
 - FR-6.3 Extraction order: (1) `application/ld+json` schema.org `Product`/`Offer` (`price`, `priceCurrency`, `availability`); (2) CSS/regex fallback. Record `extraction_method` as `json-ld`, `css-fallback`, or `failed`.
 - FR-6.4 **No LLM calls** in this step.
 - FR-6.5 For every successful check, insert a `price_history` row.
-- FR-6.6 **Capture `previous_lowest = lowest_price_seen` before updating**, then set `lowest_price_seen = min(lowest_price_seen, current_price)`.
+- FR-6.6 **Capture `previous_lowest = lowest_price_seen` before updating**, then set `lowest_price_seen = min(lowest_price_seen, current_price)` **only when the item is in stock**. An out-of-stock price is recorded in history but never becomes the low, so it can't block a "new low" alert when stock returns.
+- FR-6.8 A scrape whose page now shows a different product (title mismatch) or a different currency counts as a failed check: nothing is recorded and nothing alerts.
 - FR-6.7 Failed scrapes are logged and skipped; they never trigger alerts or change prices.
 
 ### FR-7 Drop evaluation (`evaluate_drops`, conditional edge) — BR-8
@@ -103,8 +104,8 @@ AND current_price < COALESCE(last_notified_price, +∞)
 **Acceptance (unit-tested):** price at target → alert; new low above target → alert; out of stock → no alert; same price as last notified → no alert; first alert with NULL last_notified → alert.
 
 ### FR-8 Alert (`generate_and_send_alert`) — BR-8
-- FR-8.1 Generate concise alert text with the LLM: product, retailer, previous vs. new price, % discount vs. initial price, historical low, and direct link.
-- FR-8.2 If LLM generation fails, send a deterministic template message instead.
+- FR-8.1 Generate concise alert text with the LLM: product, retailer, previous vs. new price, % discount vs. initial price, historical low, and direct link. All numbers are precomputed in code and passed as facts; the LLM only words them.
+- FR-8.2 If LLM generation fails, refuses, returns empty text, or omits the actual new price, send a deterministic template message instead. If the link is missing, it is appended.
 - FR-8.3 Send via the configured channel (FR-10).
 - FR-8.4 On successful send, set `last_notified_price = current_price`.
 
