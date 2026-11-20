@@ -2,7 +2,7 @@
 
 Living tracker for the Shopping Research Assistant. Update after each step or decision.
 
-_Last updated: 2026-11-19_
+_Last updated: 2026-11-20_
 
 ## Build progress
 - [x] **Step 1 — Project setup & data layer:** `pyproject.toml`, `.env.example`, `README.md`, `config.py`, `models.py`, `database.py`, DB tests (8 passing; installs fine on Python 3.14). `database.record_price_check` returns the previous lowest price (spec fix #1).
@@ -30,6 +30,7 @@ _Last updated: 2026-11-19_
 - [x] README rewritten for v1: setup, keys, options, alert rules, retailers, troubleshooting.
 - [x] Live CLI smoke test (throwaway pre-Sprint-5 DB): the migration worked, list/history/retarget/pause/cancelled-delete all worked, and the background monitor skipped the paused item and stopped cleanly. Three polish fixes followed: no "Next check: ?" while stopping; only the first equal lowest is marked; "last check" falls back to history for pre-upgrade items.
 - [x] Tests: 266 passing, offline.
+- [x] `docs/user-stories.md` v1.1 (2026-11-20): all 23 stories marked ✅ with the sprint that finished each; US-13/US-20 wording aligned with the in-stock-only lowest price (FR-6.6).
 - [ ] Tag `v1.0.0`: after the user commits.
 
 **Sprint 4 (branch `sprint-4-monitor`): Monitor and alerts.** Stories US-10, US-13, US-14, US-15, US-17 (14 points).
@@ -117,6 +118,12 @@ _Last updated: 2026-11-19_
 | 2026-11-18 | Effort: intent routing `low` (max_tokens 4k); research and follow-ups `medium` (max_tokens 16k). The model stays `LLM_MODEL` (currently `claude-sonnet-5-5`, the user's choice to confirm; Opus 5.5 is the alternative). |
 | 2026-11-18 | Graph state stores comparisons and products as plain dicts (`model_dump()`), not Pydantic objects, so checkpoints serialize safely. |
 | 2026-11-18 | Each terminal node sets `last_action` (researched / answered / finalized / asked / error); callers use this, not `intent`, to see what a turn did. |
+| 2026-11-20 | **v2 = single-user web app** (user decision). Frontend: Next.js + **Tailwind CSS**. Backend: **FastAPI** in `source/` wrapping `ResearchSession`, `PriceMonitor` and `watchlist`; no business logic in Next.js API routes. Typed TS client generated from the OpenAPI spec. |
+| 2026-11-20 | **API designed for multi-user from the start** (user decision): `users` table with a seeded default user; every table has `user_id`; all queries are scoped by user; endpoints never take `user_id` from the client. One `current_user` dependency returns the default user, so auth (BL-01) only swaps that dependency. |
+| 2026-11-20 | **No authentication in v2** (user decision); backlogged as BL-01. Multi-user backlogged as BL-02. |
+| 2026-11-20 | **Postgres now, even for single user** (user decision). Replaces SQLite for the watchlist and for LangGraph checkpoints (`PostgresSaver`). Supersedes the 2026-11-15 SQLite decision once implemented; update CLAUDE.md's tech stack then. |
+| 2026-11-20 | Mobile: **Expo (React Native)** later (BL-05), reusing the monorepo's shared `api-client` and `core` packages; share logic, not UI components. |
+| 2026-11-20 | Backlog lives in [docs/backlog.md](docs/backlog.md) (BL-xx items). Items become user stories when pulled into a sprint. |
 
 ## Spec corrections (vs. project-proposal.md; see FRD)
 1. Capture the previous `lowest_price_seen` **before** updating it; otherwise "new low" can never fire.
@@ -137,7 +144,11 @@ _Last updated: 2026-11-19_
 
 ## Next action
 1. The user commits Sprints 4-5, merges into `main` (the repo has no `main` branch yet; the first commit was made on a sprint branch), and tags `v1.0.0`.
-2. Post-v1 ideas (not scheduled):
-   - Run the monitor as an OS scheduled task so checks happen without the CLI open.
-   - Web UI on top of `ResearchSession`, `PriceMonitor` and `watchlist`.
-   - Retry blocked retailers later.
+2. **v2 web app (planning; no code yet).** Proposed phases:
+   1. FastAPI layer with SSE streaming for research turns and the listing lookup; `interrupt()` confirmation exposed as its own endpoint. Offline tests with `TestClient`.
+   2. Postgres migration (watchlist + `PostgresSaver`), `users` table and `user_id` everywhere; Docker Compose for local Postgres.
+   3. Monitor as a separate worker process (single instance), replacing in-CLI APScheduler for the server.
+   4. Monorepo (`apps/web`, `packages/api-client`, `packages/core`; pnpm workspaces) and the Next.js + Tailwind web app.
+   - Next: write v2 user stories and a sprint plan, then update BRD/FRD.
+   - Open: how tests get a Postgres (testcontainers vs a local test DB) without breaking the no-network rule.
+3. Unscheduled items: see [docs/backlog.md](docs/backlog.md) (auth, multi-user, mobile, push, hosting, blocked retailers).
