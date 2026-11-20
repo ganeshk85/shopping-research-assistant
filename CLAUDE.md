@@ -10,6 +10,7 @@ Conversational shopping assistant that helps a user research and finalize the be
 - [docs/FRD.md](docs/FRD.md) — functional requirements (authoritative where it corrects the proposal)
 - [docs/user-stories.md](docs/user-stories.md): user stories US-01…US-23 with acceptance criteria
 - [docs/sprint-plan.md](docs/sprint-plan.md): sprints 0–5, Definition of Done
+- [docs/backlog.md](docs/backlog.md): unscheduled items BL-01… (auth, multi-user, mobile, hosting)
 - [MEMORY.md](MEMORY.md) — living plan, build progress, and decisions log. **Read it at the start of every session.**
 
 ## Tech stack
