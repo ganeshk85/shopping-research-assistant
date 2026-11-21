@@ -3,8 +3,8 @@
 
 | Field | Value |
 |---|---|
-| Version | 1.0 |
-| Date | 2026-11-20 |
+| Version | 1.1 |
+| Date | 2026-11-21 (BL-11…BL-14 added) |
 | Related | [user-stories.md](user-stories.md) (v1, done), [sprint-plan.md](sprint-plan.md), [MEMORY.md](../MEMORY.md) |
 
 Items that are agreed but **not scheduled**. When an item is pulled into a sprint, write it as a user story with acceptance criteria, then set its status here to `Scheduled` and link the story.
@@ -35,6 +35,10 @@ Items that are agreed but **not scheduled**. When an item is pulled into a sprin
 | BL-08 | Public cloud hosting | Ops | Should | Backlog | BL-01 |
 | BL-09 | Retry blocked retailers | Retailers | Could | Backlog | — |
 | BL-10 | Live webhook demo | Notifications | Could | Backlog | — |
+| BL-11 | Periodic deal watch for tracked items | Deals | Should | Backlog | US-46 |
+| BL-12 | Add new retailers from Settings | Retailers | Could | Backlog | US-47 |
+| BL-13 | Admin-wide retailer policy vs. per-user choice | Platform | Could | Backlog | BL-02, US-47 |
+| BL-14 | Price snapshot per option during research (option B) | Research | Could | Backlog | US-44 |
 
 ---
 
@@ -66,7 +70,7 @@ Needed before others use the app, and required by app stores.
 
 ### BL-05 Native mobile app (iOS + Android)
 - **Expo (React Native) + TypeScript**, one codebase for both platforms, built and submitted with EAS.
-- Reuses the shared packages from the web monorepo (`packages/api-client` generated from OpenAPI, `packages/core` hooks and formatting). UI is built natively, not shared with the web app; NativeWind keeps styling close to Tailwind.
+- Reuses the shared packages from the web monorepo (`source/packages/api-client` generated from OpenAPI, `source/packages/core` hooks and formatting; the Expo app would live in `source/apps/mobile`). UI is built natively, not shared with the web app; NativeWind keeps styling close to Tailwind.
 - Same screens as the web app: research chat with streamed progress, tracking confirmation, watchlist, price history, settings.
 - Retailer links open in the system browser. The app never purchases or adds to cart (BR-10).
 - Streaming needs an SSE library such as `react-native-sse`, or polling as a fallback.
@@ -81,7 +85,7 @@ Needed before others use the app, and required by app stores.
 - Optional alert channel for the web app using the Web Push API and a service worker.
 
 ### BL-08 Public cloud hosting
-- v2 runs locally (Docker Compose: API, worker, Postgres, web).
+- v2 runs locally on the laptop: the installed PostgreSQL 18 service, plus the FastAPI server, monitor worker and Next.js dev server as local processes. No Docker.
 - Hosting plan for later: API and monitor worker as Docker containers (Crawl4AI needs Playwright Chromium, so serverless won't work) on Fly.io, Railway, Render or a VM; managed Postgres; Next.js on Vercel.
 - Needs HTTPS, secrets management, backups, and exactly one monitor worker instance.
 
@@ -91,3 +95,21 @@ Needed before others use the app, and required by app stores.
 
 ### BL-10 Live webhook demo
 - Optional Sprint 1 leftover: send a real alert to Discord, Slack or Telegram with `WEBHOOK_URL` set. Offline tests already cover the webhook formats.
+
+### BL-11 Periodic deal watch for tracked items
+Owner request, 2026-11-21 (deferred from US-46, which only searches when a product is chosen).
+- On a schedule (e.g. daily, separate from the 6-hour price checks), search RedFlagDeals for each tracked product and alert on new matching posts.
+- Must stay deterministic like the price monitor (repo rule 1): plain search and model matching, no AI calls except optionally to word the alert.
+- Remember which posts were already reported, so the same post never alerts twice; show recent posts on the watchlist item.
+- Watch search-credit cost (one search per distinct tracked product per run; BL-03 limits).
+
+### BL-12 Add new retailers from Settings
+- US-47 only toggles the built-in retailer list. Adding a new store needs its product-URL pattern and a check that its prices can be read (JSON-LD or a selector), so it isn't a simple settings field.
+- Possible approach: an admin form that takes a domain, runs a test price check on a sample product page, and saves the retailer only if the check works.
+
+### BL-13 Admin-wide retailer policy vs. per-user choice
+- In v2 the single user is `admin`, so US-47 stores the choice per user. With sign-in and multiple users (BL-01, BL-02), decide whether an admin sets an allow-list for everyone and each user chooses within it. Needs user roles.
+
+### BL-14 Price snapshot per option during research
+- Option B from the 2026-11-21 review: during research, search the enabled retailers for each option and show "prices seen" per retailer (from search results, unverified).
+- Costs about one extra search credit and 5–15 s per research turn; search snippets can be wrong, so keep the "not verified" label. Revisit if US-44's cited estimates aren't enough.

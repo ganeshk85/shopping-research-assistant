@@ -2,12 +2,14 @@
 
 import pytest
 
-from shopping_assistant import database as db
 from shopping_assistant.models import IntentDecision, ScrapedPriceResult, TrackingDecision
 from shopping_assistant.research import ResearchSession
 from shopping_assistant.tools.search import RetailSearchResult
 
 from test_research_graph import COMPARISON, FakeLLM, FakeSearch, explore
+
+# Sessions save to (and checkpoint in) the test database; start each test empty.
+pytestmark = pytest.mark.usefixtures("store")
 
 AMZ = "https://www.amazon.ca/dp/B0CHX4ZD9K"
 STAPLES = "https://www.staples.ca/products/3105225-en-bose-quietcomfort-ultra"
@@ -90,7 +92,7 @@ def test_finalize_finds_verified_listings_and_pauses(settings_factory):
     assert "1. Amazon.ca: CA$399.00 (checked on the page, in stock)" in turn.reply
     assert session.list_threads()[0]["finalized_product"] == "Bose QuietComfort Ultra"
     # Nothing saved before confirmation (BRL-6).
-    assert db.list_tracked_items(session.db_path) == []
+    assert session.store.list_tracked_items() == []
 
 
 def test_verification_failure_falls_back_to_unverified_prices(settings_factory):
@@ -124,13 +126,13 @@ def test_confirm_with_default_target_saves_each_listing(settings_factory):
     turn = session.confirm(thread, TrackingDecision(action="track", selected=[1, 2]))
 
     assert turn.last_action == "tracking_saved" and turn.pending_confirmation is None
-    items = db.list_tracked_items(session.db_path)
+    items = session.store.list_tracked_items()
     assert [(i.retailer, i.initial_price, i.target_price, i.status) for i in items] == [
         ("Amazon.ca", 399.0, 359.1, "active"),
         ("Staples Canada", 429.99, 359.1, "active"),
     ]
     assert sorted(turn.saved_item_ids) == [i.id for i in items]
-    assert [h.price for h in db.get_price_history(session.db_path, items[0].id)] == [399.0]
+    assert [h.price for h in session.store.get_price_history(items[0].id)] == [399.0]
     assert "Tracking is set up for Bose QuietComfort Ultra" in turn.reply
     assert "Amazon.ca: now CA$399.00, alert at or below CA$359.10" in turn.reply
 
@@ -139,7 +141,7 @@ def test_custom_target_and_single_listing(settings_factory):
     session, thread = make_session(settings_factory(), FINALIZE_2)
     session.send(thread, "option 2")
     session.confirm(thread, TrackingDecision(action="track", selected=[2], target_price=380.0))
-    items = db.list_tracked_items(session.db_path)
+    items = session.store.list_tracked_items()
     assert [(i.retailer, i.target_price) for i in items] == [("Staples Canada", 380.0)]
 
 
@@ -147,7 +149,7 @@ def test_default_target_uses_only_selected_listings(settings_factory):
     session, thread = make_session(settings_factory(), FINALIZE_2)
     session.send(thread, "option 2")
     session.confirm(thread, TrackingDecision(action="track", selected=[2]))  # Staples 429.99 only
-    assert db.list_tracked_items(session.db_path)[0].target_price == 386.99
+    assert session.store.list_tracked_items()[0].target_price == 386.99
 
 
 def test_already_tracked_url_is_not_duplicated(settings_factory):
@@ -157,7 +159,7 @@ def test_already_tracked_url_is_not_duplicated(settings_factory):
     session.confirm(thread, TrackingDecision(action="track", selected=[1]))
     session.send(thread, "option 2 again")
     turn = session.confirm(thread, TrackingDecision(action="track", selected=[1, 2]))
-    items = db.list_tracked_items(session.db_path)
+    items = session.store.list_tracked_items()
     assert [i.retailer for i in items] == ["Amazon.ca", "Staples Canada"]
     assert "Amazon.ca: already on your watchlist" in turn.reply
 
@@ -171,7 +173,7 @@ def test_cancel_saves_nothing(settings_factory):
     turn = session.confirm(thread, TrackingDecision(action="cancel"))
     assert turn.last_action == "tracking_cancelled"
     assert "won't track anything" in turn.reply
-    assert db.list_tracked_items(session.db_path) == []
+    assert session.store.list_tracked_items() == []
     with pytest.raises(RuntimeError):
         session.confirm(thread, TrackingDecision(action="cancel"))  # nothing pending anymore
 
@@ -181,7 +183,7 @@ def test_invalid_decision_saves_nothing(settings_factory):
     session.send(thread, "option 2")
     turn = session.confirm(thread, TrackingDecision(action="track", selected=[9]))
     assert turn.last_action == "tracking_cancelled" and "Nothing was saved" in turn.reply
-    assert db.list_tracked_items(session.db_path) == []
+    assert session.store.list_tracked_items() == []
 
 
 def test_new_message_while_pending_cancels_first(settings_factory):
@@ -191,7 +193,7 @@ def test_new_message_while_pending_cancels_first(settings_factory):
     assert turn.last_action == "researched"
     history = [text for _, text in session.history(thread)]
     assert any("won't track anything" in t for t in history)
-    assert db.list_tracked_items(session.db_path) == []
+    assert session.store.list_tracked_items() == []
 
 
 def test_pending_confirmation_survives_restart(settings_factory):
@@ -205,7 +207,7 @@ def test_pending_confirmation_survives_restart(settings_factory):
     pending = s2.pending_confirmation(thread)
     assert pending and len(pending["listings"]) == 2
     s2.confirm(thread, TrackingDecision(action="track", selected=[1]))
-    assert len(db.list_tracked_items(s2.db_path)) == 1
+    assert len(s2.store.list_tracked_items()) == 1
     s2.close()
 
 
@@ -221,7 +223,7 @@ def test_purchase_request_is_declined_without_side_effects(settings_factory):
     assert turn.last_action == "declined"
     assert "can't buy, order, or add anything to a cart" in turn.reply
     assert "alert you when the price drops" in turn.reply
-    assert search.listing_calls == [] and db.list_tracked_items(session.db_path) == []
+    assert search.listing_calls == [] and session.store.list_tracked_items() == []
 
 
 def test_safety_rule_is_in_every_llm_system_prompt():

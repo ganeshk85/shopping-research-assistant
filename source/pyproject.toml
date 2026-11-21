@@ -10,7 +10,9 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "langgraph>=0.2",
-    "langgraph-checkpoint-sqlite>=2.0",
+    "langgraph-checkpoint-postgres>=2.0",
+    "psycopg[binary]>=3.2",
+    "psycopg-pool>=3.2",
     "langchain>=0.3",
     "langchain-anthropic>=0.3",
     "pydantic>=2.7",
@@ -21,6 +23,8 @@ dependencies = [
     "httpx>=0.27",
     "beautifulsoup4>=4.12",
     "lxml>=5",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
@@ -34,6 +38,9 @@ shopping-assistant = "shopping_assistant.main:main"
 
 [tool.setuptools.packages.find]
 include = ["shopping_assistant*"]
+
+[tool.setuptools.package-data]
+"shopping_assistant.migrations" = ["*.sql"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

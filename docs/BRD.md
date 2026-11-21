@@ -3,8 +3,8 @@
 
 | Field | Value |
 |---|---|
-| Version | 1.0 (draft) |
-| Date | 2026-11-15 |
+| Version | 1.1 (v2 scope added) |
+| Date | 2026-11-21 (v1.0: 2026-11-15) |
 | Source | [project-proposal.md](project-proposal.md) |
 | Related | [FRD.md](FRD.md) |
 
@@ -37,7 +37,7 @@ Choosing a product means reading many reviews, comparing specs, and then checkin
 ## 5. Stakeholders & users
 | Role | Description |
 |---|---|
-| Primary user | An individual Canadian shopper using a CLI on their own machine |
+| Primary user | An individual Canadian shopper on their own machine, using the web app (v2) or the CLI |
 | Owner / developer | Project maintainer who configures API keys and notification channels |
 
 **Persona:** A busy shopper who knows roughly what they need (e.g. "noise-cancelling headphones under $400") but not which model, and wants a nudge when the price drops.
@@ -54,14 +54,21 @@ Choosing a product means reading many reviews, comparing specs, and then checkin
 - Price-drop alerts via console, webhook (Discord/Slack/Telegram), or email.
 - Interactive CLI to research, view/manage the watchlist, and run checks.
 
+### In scope (v2, added 2026-11-20)
+- A browser web app (Next.js) for research, tracking confirmation, the watchlist with price-history charts, and alert settings, for a single local user. See [v2-user-stories.md](v2-user-stories.md).
+- Local PostgreSQL storage with a data model ready for multiple users; the CLI keeps working on the same data.
+- A background worker so scheduled checks run without the CLI open, while the laptop is on.
+- Alert channel chosen and tested in the app; server secrets stay in local configuration.
+- One-time import of a v1 watchlist.
+
 ### Out of scope
 - Purchasing, checkout, payment handling, or adding items to carts (**prohibited**, not just deferred).
 - Retailer accounts, logins, coupons, or loyalty programs.
 - Non-Canadian retailers and currency conversion.
 - Best Buy Canada (blocks automated price checks; excluded from v1, decided 2026-11-16).
 - RONA (blocks automated price checks with DataDome; excluded from v1, decided 2026-11-16).
-- Web/mobile UI and multi-user accounts (architecture must allow adding later).
-- Hosted/always-on deployment.
+- ~~Web UI~~ (in scope for v2). Mobile apps, sign-in and multi-user accounts remain out of scope; the architecture allows adding them later ([backlog](backlog.md) BL-01, BL-02, BL-05).
+- Hosted/always-on deployment (BL-08).
 
 ## 7. Business rules
 | ID | Rule |
@@ -94,8 +101,9 @@ Choosing a product means reading many reviews, comparing specs, and then checkin
 - Retailer product pages are publicly accessible without login.
 
 ## 10. Constraints
-- Python 3.11+, local SQLite storage, CLI interface.
-- Background checks run only while the application process is running (no system service in v1).
+- Python 3.11+; v1: local SQLite storage and a CLI; v2: local PostgreSQL, a local HTTP API and a web app (Node.js 20.9+).
+- Background checks run only while a process is running: in v1 the CLI's monitor, in v2 the worker (no system service or hosting yet).
+- No sign-in in v2: the API accepts connections from the local machine only.
 - Third-party API usage limits and costs (Tavily, LLM) apply.
 
 ## 11. Risks

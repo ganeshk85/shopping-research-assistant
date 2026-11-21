@@ -1,0 +1,2106 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Shopping Research Assistant API",
+    "summary": "Research products, track Canadian prices, get drop alerts. Never purchases anything.",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "Is the API (and its database) up?",
+        "description": "Always 200 while the API runs; `database` says whether PostgreSQL is reachable.",
+        "operationId": "health_api_v1_health_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads": {
+      "post": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Start a new conversation",
+        "description": "Returns a fresh thread ID. Nothing is stored until the first message is sent.",
+        "operationId": "create_thread_api_v1_threads_post",
+        "responses": {
+          "201": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadCreated"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "research"
+        ],
+        "summary": "List my conversations",
+        "description": "Most recently updated first.",
+        "operationId": "list_threads_api_v1_threads_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ThreadSummary"
+                  },
+                  "title": "Response List Threads Api V1 Threads Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{thread_id}": {
+      "get": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Get a conversation",
+        "description": "Messages, the latest comparison, the chosen product and any pending confirmation.",
+        "operationId": "get_thread_api_v1_threads__thread_id__get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ThreadDetail"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{thread_id}/messages": {
+      "post": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Send a message (streams progress)",
+        "description": "A new or existing thread ID. A pending confirmation is cancelled first (FR-4.4).",
+        "operationId": "send_message_api_v1_threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SendMessage"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Server-Sent Events. Each message is `event: progress|result|error` plus `data: <JSON>`; see the `StreamEvent` schema. Any number of `progress` events, then one `result` or `error`.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/StreamEvent"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The conversation belongs to someone else.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A turn is already running in this conversation.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/threads/{thread_id}/confirmation": {
+      "get": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Get the pending tracking confirmation",
+        "operationId": "get_confirmation_api_v1_threads__thread_id__confirmation_get",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PendingConfirmation"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such conversation, or nothing pending.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "research"
+        ],
+        "summary": "Confirm or cancel tracking",
+        "description": "`track` saves one watchlist item per selected listing; `cancel` saves nothing.",
+        "operationId": "confirm_tracking_api_v1_threads__thread_id__confirmation_post",
+        "parameters": [
+          {
+            "name": "thread_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "title": "Thread Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConfirmTracking"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TurnResult"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "409": {
+            "description": "Nothing pending, or a turn is already running.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlist": {
+      "get": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "List my watchlist",
+        "operationId": "list_items_api_v1_watchlist_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WatchlistItem"
+                  },
+                  "type": "array",
+                  "title": "Response List Items Api V1 Watchlist Get"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not Found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlist/{item_id}": {
+      "get": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Get one item",
+        "operationId": "get_item_api_v1_watchlist__item_id__get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "patch": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Pause, resume or change the target",
+        "operationId": "update_item_api_v1_watchlist__item_id__patch",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateWatchlistItem"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WatchlistItem"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Delete an item and its price history",
+        "description": "Irreversible: the web app asks the user to confirm first.",
+        "operationId": "delete_item_api_v1_watchlist__item_id__delete",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/watchlist/{item_id}/history": {
+      "get": {
+        "tags": [
+          "watchlist"
+        ],
+        "summary": "Price history, oldest first",
+        "operationId": "get_history_api_v1_watchlist__item_id__history_get",
+        "parameters": [
+          {
+            "name": "item_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Item Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PriceHistory"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checks": {
+      "post": {
+        "tags": [
+          "checks"
+        ],
+        "summary": "Start a price check of every active item",
+        "description": "Returns at once with the new run (status 'running'). Alerts use the saved notification settings.",
+        "operationId": "start_check_api_v1_checks_post",
+        "responses": {
+          "202": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckRun"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A check is already running",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Alerts or the database aren't set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "checks"
+        ],
+        "summary": "Recent price checks, newest first",
+        "operationId": "list_checks_api_v1_checks_get",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "maximum": 100,
+              "minimum": 1,
+              "default": 20,
+              "title": "Limit"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/CheckRun"
+                  },
+                  "title": "Response List Checks Api V1 Checks Get"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checks/status": {
+      "get": {
+        "tags": [
+          "checks"
+        ],
+        "summary": "Running check, last check and next scheduled check",
+        "operationId": "check_status_api_v1_checks_status_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckStatus"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/checks/{check_id}": {
+      "get": {
+        "tags": [
+          "checks"
+        ],
+        "summary": "One price check",
+        "operationId": "get_check_api_v1_checks__check_id__get",
+        "parameters": [
+          {
+            "name": "check_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "title": "Check Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CheckRun"
+                }
+              }
+            }
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            },
+            "description": "Not Found"
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings/notifications": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "My alert channel",
+        "operationId": "get_settings_api_v1_settings_notifications_get",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationSettingsOut"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Save my alert channel",
+        "operationId": "save_settings_api_v1_settings_notifications_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateNotificationSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotificationSettingsOut"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid input",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Forget my alert channel (use the .env settings)",
+        "operationId": "reset_settings_api_v1_settings_notifications_delete",
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          }
+        }
+      }
+    },
+    "/api/v1/settings/notifications/test": {
+      "post": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "Send a test alert through my channel",
+        "operationId": "send_test_alert_api_v1_settings_notifications_test_post",
+        "responses": {
+          "200": {
+            "description": "Successful Response",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestAlertResult"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The alert couldn't be delivered",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The channel isn't set up",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorBody"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "ChatMessage": {
+        "properties": {
+          "role": {
+            "type": "string",
+            "enum": [
+              "user",
+              "assistant"
+            ],
+            "title": "Role"
+          },
+          "text": {
+            "type": "string",
+            "title": "Text",
+            "description": "Plain text (what the CLI shows)."
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchComparison"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Set on a message that presented a comparison; show it as cards instead of `text`."
+          },
+          "listings": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/RetailListing"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Listings",
+            "description": "Set on a message that presented retailer listings."
+          }
+        },
+        "type": "object",
+        "required": [
+          "role",
+          "text"
+        ],
+        "title": "ChatMessage"
+      },
+      "CheckRun": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "trigger": {
+            "type": "string",
+            "enum": [
+              "schedule",
+              "api",
+              "cli"
+            ],
+            "title": "Trigger"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "running",
+              "finished",
+              "failed"
+            ],
+            "title": "Status"
+          },
+          "started_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Started At"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "active_items": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Active Items"
+          },
+          "checked": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Checked"
+          },
+          "failed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Failed"
+          },
+          "alerts_sent": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alerts Sent"
+          },
+          "alerts_failed": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alerts Failed",
+            "description": "Not delivered; retried at the next check."
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "trigger",
+          "status",
+          "started_at"
+        ],
+        "title": "CheckRun",
+        "description": "One price check of a user's active items (a `monitor_runs` row)."
+      },
+      "CheckStatus": {
+        "properties": {
+          "running": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The check in progress, if any."
+          },
+          "last_finished": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CheckRun"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The most recent check that ended."
+          },
+          "schedule": {
+            "$ref": "#/components/schemas/ScheduleStatus"
+          }
+        },
+        "type": "object",
+        "required": [
+          "schedule"
+        ],
+        "title": "CheckStatus"
+      },
+      "ConfirmTracking": {
+        "properties": {
+          "action": {
+            "type": "string",
+            "enum": [
+              "track",
+              "cancel"
+            ],
+            "title": "Action"
+          },
+          "selected": {
+            "items": {
+              "type": "integer"
+            },
+            "type": "array",
+            "title": "Selected"
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price",
+            "description": "Omit to use the suggested target."
+          }
+        },
+        "type": "object",
+        "required": [
+          "action"
+        ],
+        "title": "ConfirmTracking",
+        "description": "Answer to a pending confirmation. Listing numbers are 1-based."
+      },
+      "ErrorBody": {
+        "description": "Every error response (and the SSE `error` event) has this shape.",
+        "properties": {
+          "code": {
+            "description": "Stable machine-readable code, e.g. 'not_found', 'validation_error'.",
+            "title": "Code",
+            "type": "string"
+          },
+          "message": {
+            "description": "Plain-language explanation that can be shown to the user.",
+            "title": "Message",
+            "type": "string"
+          },
+          "details": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Extra data, e.g. the invalid fields.",
+            "title": "Details"
+          }
+        },
+        "required": [
+          "code",
+          "message"
+        ],
+        "title": "ErrorBody",
+        "type": "object"
+      },
+      "FinalizedProduct": {
+        "description": "The product the user chose. Only `name` is guaranteed.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "brand": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Brand"
+          },
+          "estimated_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Estimated Price"
+          },
+          "currency": {
+            "default": "CAD",
+            "title": "Currency",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "FinalizedProduct",
+        "type": "object"
+      },
+      "Health": {
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok",
+            "title": "Status",
+            "default": "ok"
+          },
+          "database": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "unavailable"
+            ],
+            "title": "Database"
+          }
+        },
+        "type": "object",
+        "required": [
+          "database"
+        ],
+        "title": "Health"
+      },
+      "NotificationSettingsOut": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "console",
+              "webhook",
+              "email"
+            ],
+            "title": "Channel"
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "saved",
+              "env"
+            ],
+            "title": "Source",
+            "description": "'env' = nothing saved yet; the .env values are in use."
+          },
+          "webhook_url_hint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url Hint",
+            "description": "Masked webhook URL, e.g. 'https://discord.com/…f3a9'. None if none is set."
+          },
+          "alert_email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Email"
+          },
+          "email_available": {
+            "type": "boolean",
+            "title": "Email Available",
+            "description": "Whether the server can send email (sender and Resend/SMTP in .env)."
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel",
+          "source",
+          "email_available"
+        ],
+        "title": "NotificationSettingsOut",
+        "description": "The alert channel in use. Secrets are never returned: the webhook URL is masked."
+      },
+      "PendingConfirmation": {
+        "description": "Listings waiting for the user to choose what to track (FR-4).",
+        "properties": {
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "listings": {
+            "description": "Numbered from 1 in this order when confirming.",
+            "items": {
+              "$ref": "#/components/schemas/RetailListing"
+            },
+            "title": "Listings",
+            "type": "array"
+          },
+          "suggested_target": {
+            "description": "Default target: the discount below the cheapest listing.",
+            "title": "Suggested Target",
+            "type": "number"
+          },
+          "discount": {
+            "description": "The fraction used for the suggested target, e.g. 0.1.",
+            "title": "Discount",
+            "type": "number"
+          }
+        },
+        "required": [
+          "product_name",
+          "listings",
+          "suggested_target",
+          "discount"
+        ],
+        "title": "PendingConfirmation",
+        "type": "object"
+      },
+      "PriceHistory": {
+        "properties": {
+          "item_id": {
+            "type": "integer",
+            "title": "Item Id"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "target_price": {
+            "type": "number",
+            "title": "Target Price"
+          },
+          "entries": {
+            "items": {
+              "$ref": "#/components/schemas/PriceHistoryEntryOut"
+            },
+            "type": "array",
+            "title": "Entries",
+            "description": "Oldest first."
+          }
+        },
+        "type": "object",
+        "required": [
+          "item_id",
+          "currency",
+          "target_price",
+          "entries"
+        ],
+        "title": "PriceHistory"
+      },
+      "PriceHistoryEntryOut": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "price": {
+            "type": "number",
+            "title": "Price"
+          },
+          "in_stock": {
+            "type": "boolean",
+            "title": "In Stock"
+          },
+          "checked_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Checked At"
+          },
+          "is_lowest": {
+            "type": "boolean",
+            "title": "Is Lowest",
+            "description": "The first check at the lowest in-stock price."
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "price",
+          "in_stock",
+          "checked_at",
+          "is_lowest"
+        ],
+        "title": "PriceHistoryEntryOut"
+      },
+      "ProductCandidate": {
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "brand": {
+            "title": "Brand",
+            "type": "string"
+          },
+          "estimated_price": {
+            "title": "Estimated Price",
+            "type": "number"
+          },
+          "currency": {
+            "default": "CAD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "rating_summary": {
+            "title": "Rating Summary",
+            "type": "string"
+          },
+          "key_specs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Key Specs",
+            "type": "array"
+          },
+          "pros": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Pros",
+            "type": "array"
+          },
+          "cons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Cons",
+            "type": "array"
+          },
+          "best_for": {
+            "title": "Best For",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "brand",
+          "estimated_price",
+          "rating_summary",
+          "best_for"
+        ],
+        "title": "ProductCandidate",
+        "type": "object"
+      },
+      "ResearchComparison": {
+        "properties": {
+          "candidates": {
+            "items": {
+              "$ref": "#/components/schemas/ProductCandidate"
+            },
+            "title": "Candidates",
+            "type": "array"
+          },
+          "recommendation_summary": {
+            "title": "Recommendation Summary",
+            "type": "string"
+          },
+          "clarifying_question": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Clarifying Question"
+          },
+          "sources": {
+            "description": "URLs of the search results the comparison is based on.",
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "candidates",
+          "recommendation_summary"
+        ],
+        "title": "ResearchComparison",
+        "type": "object"
+      },
+      "RetailListing": {
+        "properties": {
+          "product_name": {
+            "title": "Product Name",
+            "type": "string"
+          },
+          "retailer": {
+            "title": "Retailer",
+            "type": "string"
+          },
+          "url": {
+            "title": "Url",
+            "type": "string"
+          },
+          "current_price": {
+            "title": "Current Price",
+            "type": "number"
+          },
+          "currency": {
+            "default": "CAD",
+            "title": "Currency",
+            "type": "string"
+          },
+          "in_stock": {
+            "default": true,
+            "title": "In Stock",
+            "type": "boolean"
+          },
+          "price_verified": {
+            "default": false,
+            "title": "Price Verified",
+            "type": "boolean"
+          },
+          "note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Note"
+          }
+        },
+        "required": [
+          "product_name",
+          "retailer",
+          "url",
+          "current_price"
+        ],
+        "title": "RetailListing",
+        "type": "object"
+      },
+      "ScheduleStatus": {
+        "properties": {
+          "worker_running": {
+            "type": "boolean",
+            "title": "Worker Running",
+            "description": "False if the worker is stopped or hasn't reported for 3 minutes."
+          },
+          "interval_hours": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Interval Hours"
+          },
+          "next_run_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Next Run At",
+            "description": "When the next scheduled check is due."
+          },
+          "last_heartbeat_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Heartbeat At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "worker_running"
+        ],
+        "title": "ScheduleStatus",
+        "description": "The background worker (`shopping-assistant worker`), as last reported."
+      },
+      "SendMessage": {
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Text"
+          }
+        },
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "title": "SendMessage"
+      },
+      "TestAlertResult": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "console",
+              "webhook",
+              "email"
+            ],
+            "title": "Channel"
+          },
+          "message": {
+            "type": "string",
+            "title": "Message"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel",
+          "message"
+        ],
+        "title": "TestAlertResult"
+      },
+      "ThreadCreated": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id",
+            "description": "Use this ID to send the first message; the thread is listed after that."
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id"
+        ],
+        "title": "ThreadCreated"
+      },
+      "ThreadDetail": {
+        "properties": {
+          "thread": {
+            "$ref": "#/components/schemas/ThreadSummary"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessage"
+            },
+            "type": "array",
+            "title": "Messages"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchComparison"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "finalized_product": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalizedProduct"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "pending_confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingConfirmation"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread",
+          "messages"
+        ],
+        "title": "ThreadDetail"
+      },
+      "ThreadSummary": {
+        "properties": {
+          "thread_id": {
+            "type": "string",
+            "title": "Thread Id"
+          },
+          "title": {
+            "type": "string",
+            "title": "Title"
+          },
+          "finalized_product": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finalized Product"
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Updated At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "thread_id",
+          "title",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ThreadSummary"
+      },
+      "TurnResult": {
+        "description": "What one message (or confirmation) produced.",
+        "properties": {
+          "thread_id": {
+            "title": "Thread Id",
+            "type": "string"
+          },
+          "reply": {
+            "description": "All assistant text produced this turn.",
+            "title": "Reply",
+            "type": "string"
+          },
+          "last_action": {
+            "anyOf": [
+              {
+                "enum": [
+                  "researched",
+                  "answered",
+                  "finalized",
+                  "asked",
+                  "error",
+                  "declined",
+                  "no_listings",
+                  "tracking_saved",
+                  "tracking_cancelled"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Last Action"
+          },
+          "comparison": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResearchComparison"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "The latest comparison; option numbers refer to its candidates."
+          },
+          "finalized_product": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/FinalizedProduct"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Set when a product was chosen in this turn."
+          },
+          "pending_confirmation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PendingConfirmation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "saved_item_ids": {
+            "description": "Watchlist items created this turn.",
+            "items": {
+              "type": "integer"
+            },
+            "title": "Saved Item Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "thread_id",
+          "reply"
+        ],
+        "title": "TurnResult",
+        "type": "object"
+      },
+      "UpdateNotificationSettings": {
+        "properties": {
+          "channel": {
+            "type": "string",
+            "enum": [
+              "console",
+              "webhook",
+              "email"
+            ],
+            "title": "Channel"
+          },
+          "webhook_url": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 2000,
+                "pattern": "^https?://\\S+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Webhook Url"
+          },
+          "alert_email": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 254,
+                "pattern": "^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Alert Email"
+          }
+        },
+        "type": "object",
+        "required": [
+          "channel"
+        ],
+        "title": "UpdateNotificationSettings",
+        "description": "Omit `webhook_url` or `alert_email` to keep the saved value; send null to clear it."
+      },
+      "UpdateWatchlistItem": {
+        "properties": {
+          "status": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "active",
+                  "paused"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status",
+            "description": "'paused' stops checks; 'active' resumes."
+          },
+          "target_price": {
+            "anyOf": [
+              {
+                "type": "number",
+                "exclusiveMinimum": 0.0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Price"
+          }
+        },
+        "type": "object",
+        "title": "UpdateWatchlistItem"
+      },
+      "WatchlistItem": {
+        "properties": {
+          "id": {
+            "type": "integer",
+            "title": "Id"
+          },
+          "product_name": {
+            "type": "string",
+            "title": "Product Name"
+          },
+          "retailer": {
+            "type": "string",
+            "title": "Retailer"
+          },
+          "url": {
+            "type": "string",
+            "title": "Url"
+          },
+          "currency": {
+            "type": "string",
+            "title": "Currency"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "active",
+              "paused"
+            ],
+            "title": "Status"
+          },
+          "initial_price": {
+            "type": "number",
+            "title": "Initial Price"
+          },
+          "target_price": {
+            "type": "number",
+            "title": "Target Price"
+          },
+          "lowest_price_seen": {
+            "type": "number",
+            "title": "Lowest Price Seen",
+            "description": "Lowest in-stock price seen."
+          },
+          "latest_price": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest Price",
+            "description": "Price at the most recent check."
+          },
+          "latest_in_stock": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latest In Stock"
+          },
+          "last_checked_at": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Checked At",
+            "description": "None = not yet checked."
+          },
+          "last_check_error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Check Error"
+          },
+          "consecutive_failures": {
+            "type": "integer",
+            "title": "Consecutive Failures"
+          },
+          "needs_attention": {
+            "type": "boolean",
+            "title": "Needs Attention",
+            "description": "True after repeated failed checks."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "title": "Created At"
+          }
+        },
+        "type": "object",
+        "required": [
+          "id",
+          "product_name",
+          "retailer",
+          "url",
+          "currency",
+          "status",
+          "initial_price",
+          "target_price",
+          "lowest_price_seen",
+          "consecutive_failures",
+          "needs_attention",
+          "created_at"
+        ],
+        "title": "WatchlistItem"
+      },
+      "ProgressEvent": {
+        "properties": {
+          "step": {
+            "description": "Graph step name, e.g. 'research_and_compare'.",
+            "title": "Step",
+            "type": "string"
+          },
+          "message": {
+            "description": "What the assistant is doing now, for display.",
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "step",
+          "message"
+        ],
+        "title": "ProgressEvent",
+        "type": "object"
+      },
+      "StreamError": {
+        "properties": {
+          "event": {
+            "const": "error",
+            "title": "Event",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ErrorBody"
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ],
+        "title": "StreamError",
+        "type": "object"
+      },
+      "StreamEvent": {
+        "description": "One SSE message: `event: <event>` then `data: <JSON of data>`. A stream sends any number of\n`progress` events, then exactly one `result` or `error`, then closes.",
+        "discriminator": {
+          "mapping": {
+            "error": "#/components/schemas/StreamError",
+            "progress": "#/components/schemas/StreamProgress",
+            "result": "#/components/schemas/StreamResult"
+          },
+          "propertyName": "event"
+        },
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/StreamProgress"
+          },
+          {
+            "$ref": "#/components/schemas/StreamResult"
+          },
+          {
+            "$ref": "#/components/schemas/StreamError"
+          }
+        ],
+        "title": "StreamEvent"
+      },
+      "StreamProgress": {
+        "properties": {
+          "event": {
+            "const": "progress",
+            "title": "Event",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/ProgressEvent"
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ],
+        "title": "StreamProgress",
+        "type": "object"
+      },
+      "StreamResult": {
+        "properties": {
+          "event": {
+            "const": "result",
+            "title": "Event",
+            "type": "string"
+          },
+          "data": {
+            "$ref": "#/components/schemas/TurnResult"
+          }
+        },
+        "required": [
+          "event",
+          "data"
+        ],
+        "title": "StreamResult",
+        "type": "object"
+      }
+    }
+  }
+}

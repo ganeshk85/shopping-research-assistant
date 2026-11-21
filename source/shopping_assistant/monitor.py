@@ -1,7 +1,8 @@
 """Price monitor service: the UI-facing entry point for Graph 2 (US-10, US-13 to US-17).
 
 `PriceMonitor.run_once()` checks every active tracked item once and returns a
-`MonitorSummary`. The scheduler (Sprint 5) will call the same method.
+`MonitorSummary`. Callers go through `checks.run_check`, which adds the one-check-at-a-time
+lock and records the run (US-32, US-34).
 """
 
 from __future__ import annotations
@@ -11,12 +12,12 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
-from . import database as db
 from .alerts import format_price
 from .config import Settings
+from .database import UserStore, open_store
 from .graphs.monitor_graph import MonitorDeps, Scraper, build_monitor_graph
 from .models import FailedCheck, PriceCheck
-from .tools.notifier import Notifier, build_notifier
+from .tools.notifier import Notifier, build_notifier, with_saved_settings
 
 log = logging.getLogger(__name__)
 
@@ -91,15 +92,20 @@ class PriceMonitor:
         self,
         settings: Settings,
         *,
+        store: Optional[UserStore] = None,
         scrape: Optional[Scraper] = None,
         notifier: Optional[Notifier] = None,
         alert_llm: Any = _DEFAULT,
     ) -> None:
         self.settings = settings
-        self.db_path = db.init_db(settings.watchlist_db_path)
-        self.notifier = notifier or build_notifier(settings)  # ConfigError if misconfigured (US-22)
+        # One user's watchlist; checking every user's items arrives with multi-user (BL-02).
+        self.store = store or open_store(settings)
+        # The user's saved alert channel, else .env (US-35). ConfigError if misconfigured (US-22).
+        self.notifier = notifier or build_notifier(
+            with_saved_settings(settings, self.store.get_notification_settings())
+        )
         deps = MonitorDeps(
-            db_path=self.db_path,
+            store=self.store,
             scrape=scrape or default_scraper(settings),
             notifier=self.notifier,
             alert_llm=build_alert_llm(settings) if alert_llm is _DEFAULT else alert_llm,

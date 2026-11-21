@@ -43,14 +43,16 @@ class Settings:
     check_interval_hours: int
     default_target_discount: float
     default_currency: str
+    # Postgres for app data and conversation checkpoints (v2). Empty = not configured.
+    database_url: str = ""
+    # HTTP API (v2): listens on 127.0.0.1 only; only these browser origins may call it (CORS).
+    api_port: int = 8000
+    web_origins: tuple[str, ...] = ("http://localhost:3000",)
 
     @property
     def watchlist_db_path(self) -> Path:
+        """The v1 SQLite watchlist, kept only as the source for the v1 data import (US-27)."""
         return self.data_dir / "watchlist.db"
-
-    @property
-    def checkpoints_db_path(self) -> Path:
-        return self.data_dir / "checkpoints.db"
 
     def require(self, *names: str) -> None:
         """Raise a clear error if any of the named settings are empty."""
@@ -84,4 +86,11 @@ def load_settings(env_file: Path | None = None) -> Settings:
         check_interval_hours=_int("CHECK_INTERVAL_HOURS", 6),
         default_target_discount=_float("DEFAULT_TARGET_DISCOUNT", 0.10),
         default_currency=os.getenv("DEFAULT_CURRENCY", "CAD").upper(),
+        database_url=os.getenv("DATABASE_URL", "").strip(),
+        api_port=_int("API_PORT", 8000),
+        web_origins=tuple(
+            o.strip().rstrip("/")
+            for o in os.getenv("WEB_ORIGINS", "http://localhost:3000").split(",")
+            if o.strip()
+        ),
     )

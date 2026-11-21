@@ -5,11 +5,10 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Literal, Optional
 
-from . import database as db
 from .alerts import format_price
+from .database import UserStore
 from .models import PriceHistoryEntry, TrackedItem
 
 FAILURE_WARNING_THRESHOLD = 2  # show a warning after this many failed checks in a row
@@ -23,24 +22,49 @@ class WatchlistRow:
     last_recorded_check: Optional[datetime] = None  # newest history row after the baseline
 
 
-def load_watchlist(db_path: Path) -> list[WatchlistRow]:
-    rows = []
-    for item in db.list_tracked_items(db_path):
-        history = db.get_price_history(db_path, item.id)
-        last = history[-1] if history else None
-        rows.append(WatchlistRow(
-            item,
-            last.price if last else None,
-            last.in_stock if last else None,
-            # history[0] is the baseline saved when tracking started, not a monitor check.
-            last.checked_at if len(history) > 1 else None,
-        ))
-    return rows
+def _row(item: TrackedItem, history: list[PriceHistoryEntry]) -> WatchlistRow:
+    last = history[-1] if history else None
+    return WatchlistRow(
+        item,
+        last.price if last else None,
+        last.in_stock if last else None,
+        # history[0] is the baseline saved when tracking started, not a monitor check.
+        last.checked_at if len(history) > 1 else None,
+    )
+
+
+def load_watchlist(store: UserStore) -> list[WatchlistRow]:
+    return [_row(item, store.get_price_history(item.id)) for item in store.list_tracked_items()]
+
+
+def load_row(store: UserStore, item_id: int) -> Optional[WatchlistRow]:
+    """One item's row, or None if this user has no such item."""
+    item = store.get_tracked_item(item_id)
+    return _row(item, store.get_price_history(item_id)) if item else None
+
+
+def last_checked_at(row: WatchlistRow) -> Optional[datetime]:
+    """When the monitor last tried this item (None = not yet checked)."""
+    # Items checked before the health columns existed (pre-Sprint 5 DBs) fall back to history.
+    return row.item.last_check_at or row.last_recorded_check
+
+
+def needs_attention(item: TrackedItem) -> bool:
+    """Repeated failed checks: worth a warning in the UI."""
+    return item.consecutive_failures >= FAILURE_WARNING_THRESHOLD
+
+
+def lowest_in_stock_entry(history: list[PriceHistoryEntry]) -> Optional[int]:
+    """Id of the first history entry at the lowest in-stock price (None if never in stock)."""
+    in_stock = [h for h in history if h.in_stock]
+    if not in_stock:
+        return None
+    lowest = min(h.price for h in in_stock)
+    return next(h.id for h in in_stock if h.price == lowest)
 
 
 def _last_check(row: WatchlistRow, now: Optional[datetime]) -> str:
-    # Items checked before the health columns existed (pre-Sprint 5 DBs) fall back to history.
-    when = row.item.last_check_at or row.last_recorded_check
+    when = last_checked_at(row)
     return "not yet checked" if when is None else relative_time(when, now)
 
 
@@ -83,7 +107,7 @@ def render_watchlist(rows: list[WatchlistRow], now: Optional[datetime] = None) -
         )
         if cur.upper() != "CAD":
             lines.append(f"     note: prices for this item are in {cur.upper()}, not CAD")
-        if i.consecutive_failures >= FAILURE_WARNING_THRESHOLD:
+        if needs_attention(i):
             lines.append(
                 f"     warning: last {i.consecutive_failures} checks failed ({_cut(i.last_check_error or 'unknown error', 70)})"
             )
@@ -97,15 +121,11 @@ def render_history(item: TrackedItem, history: list[PriceHistoryEntry]) -> str:
     lines = [f"Price history for #{item.id} {item.product_name} at {item.retailer}:", item.url, ""]
     if not history:
         return "\n".join(lines + ["No prices recorded yet."])
-    in_stock_prices = [h.price for h in history if h.in_stock]
-    lowest = min(in_stock_prices) if in_stock_prices else None
-    marked = False
+    lowest_id = lowest_in_stock_entry(history)  # only the first time the lowest price appeared
     for h in history:
         when = h.checked_at.astimezone().strftime("%Y-%m-%d %H:%M")
         stock = "in stock" if h.in_stock else "out of stock"
-        is_lowest = not marked and lowest is not None and h.in_stock and h.price == lowest
-        marked = marked or is_lowest  # mark only the first time the lowest price appeared
-        mark = "  <- lowest" if is_lowest else ""
+        mark = "  <- lowest" if h.id == lowest_id else ""
         lines.append(f"  {when}  {format_price(h.price, item.currency):>12}  {stock}{mark}")
     lines.append("")
     lines.append(f"Target: {format_price(item.target_price, item.currency)}")
@@ -166,31 +186,31 @@ def parse_watchlist_command(text: str) -> WatchlistCommand | str:
     return WatchlistCommand(action, item_id)  # type: ignore[arg-type]
 
 
-def apply_command(db_path: Path, cmd: WatchlistCommand) -> str:
+def apply_command(store: UserStore, cmd: WatchlistCommand) -> str:
     """Run a command that needs an item. Delete is irreversible: callers confirm first."""
-    item = db.get_tracked_item(db_path, cmd.item_id) if cmd.item_id is not None else None
+    item = store.get_tracked_item(cmd.item_id) if cmd.item_id is not None else None
     if item is None:
         return f"There's no item #{cmd.item_id} on your watchlist."
     label = f"#{item.id} {item.product_name} at {item.retailer}"
     if cmd.action == "pause":
         if item.status == "paused":
             return f"{label} is already paused."
-        db.update_status(db_path, item.id, "paused")
+        store.update_status(item.id, "paused")
         return f"Paused {label}. It won't be checked until you resume it."
     if cmd.action == "resume":
         if item.status == "active":
             return f"{label} is already active."
-        db.update_status(db_path, item.id, "active")
+        store.update_status(item.id, "active")
         return f"Resumed {label}."
     if cmd.action == "target":
-        db.update_target_price(db_path, item.id, cmd.price)
+        store.update_target_price(item.id, cmd.price)
         return (
             f"Target for {label} changed from {format_price(item.target_price, item.currency)} "
             f"to {format_price(cmd.price, item.currency)}."
         )
     if cmd.action == "history":
-        return render_history(item, db.get_price_history(db_path, item.id))
+        return render_history(item, store.get_price_history(item.id))
     if cmd.action == "delete":
-        db.delete_tracked_item(db_path, item.id)
+        store.delete_tracked_item(item.id)
         return f"Deleted {label} and its price history."
     return "Nothing to do."

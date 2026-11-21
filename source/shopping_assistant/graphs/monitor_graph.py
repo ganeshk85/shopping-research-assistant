@@ -1,4 +1,4 @@
-"""Graph 2: price monitor (FRD FR-6 to FR-8). Async, no checkpointer; all state is in SQLite.
+"""Graph 2: price monitor (FRD FR-6 to FR-8). Async, no checkpointer; all state is in Postgres.
 
     fetch_active_trackers ─▶ scrape_current_prices ─▶ evaluate_drops ─┬─▶ END (no alerts: no LLM call)
                                                                       └─▶ generate_and_send_alert ─▶ END
@@ -14,14 +14,13 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional, Sequence
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, START, StateGraph
 
-from .. import database as db
 from ..alerts import alert_facts, alert_reason, alert_subject, template_alert
+from ..database import UserStore
 from ..models import FailedCheck, MonitorState, PriceCheck, ScrapedPriceResult, TrackedItem
 from ..tools.notifier import NotificationError, Notifier
 from ..tools.search import matches_model
@@ -41,7 +40,7 @@ anything or handle payments. End with the link on its own line."""
 
 @dataclass
 class MonitorDeps:
-    db_path: Path
+    store: UserStore  # the user whose watchlist is checked
     scrape: Scraper
     notifier: Notifier
     alert_llm: Any = None  # chat model with .ainvoke(); None = always use the template
@@ -90,7 +89,7 @@ async def write_alert(check: PriceCheck, llm: Any) -> tuple[str, bool]:
 
 def build_monitor_graph(deps: MonitorDeps):
     async def fetch_active_trackers(state: MonitorState) -> dict:
-        return {"items": db.list_tracked_items(deps.db_path, status="active")}
+        return {"items": deps.store.list_tracked_items(status="active")}
 
     def route_after_fetch(state: MonitorState) -> str:
         return "scrape_current_prices" if state.get("items") else END
@@ -114,13 +113,11 @@ def build_monitor_graph(deps: MonitorDeps):
                 failures.append(FailedCheck(
                     item_id=item.id, product_name=item.product_name, retailer=item.retailer, error=error
                 ))
-                db.mark_check_failed(deps.db_path, item.id, error)
+                deps.store.mark_check_failed(item.id, error)
                 continue
-            previous_price = db.latest_price(deps.db_path, item.id)
-            previous_lowest = db.record_price_check(
-                deps.db_path, item.id, result.current_price, result.in_stock
-            )
-            db.mark_check_ok(deps.db_path, item.id)
+            previous_price = deps.store.latest_price(item.id)
+            previous_lowest = deps.store.record_price_check(item.id, result.current_price, result.in_stock)
+            deps.store.mark_check_ok(item.id)
             checks.append(PriceCheck(
                 item=item, price=result.current_price, in_stock=result.in_stock,
                 previous_price=previous_price, previous_lowest=previous_lowest,
@@ -153,7 +150,7 @@ def build_monitor_graph(deps: MonitorDeps):
                 log.warning("Alert for item %s not delivered: %s", check.item.id, exc)
                 failed.append(check.item.id)  # last_notified unchanged → retried next run
                 continue
-            db.update_last_notified(deps.db_path, check.item.id, check.price)
+            deps.store.update_last_notified(check.item.id, check.price)
             sent.append(check.item.id)
         return {"sent_alert_ids": sent, "failed_alert_ids": failed}
 

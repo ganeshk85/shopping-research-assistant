@@ -9,12 +9,15 @@ from __future__ import annotations
 import smtplib
 import sys
 from email.message import EmailMessage
-from typing import Callable, Optional, Protocol, TextIO
+from typing import TYPE_CHECKING, Callable, Optional, Protocol, TextIO
 from urllib.parse import parse_qs, urlparse
 
 import httpx
 
 from ..config import ConfigError, Settings
+
+if TYPE_CHECKING:
+    from ..models import NotificationSettings
 
 RESEND_URL = "https://api.resend.com/emails"
 DISCORD_LIMIT = 2000
@@ -168,6 +171,29 @@ class SmtpEmailNotifier:
                 smtp.send_message(msg)
         except (smtplib.SMTPException, OSError) as exc:
             raise NotificationError(f"SMTP email failed: {exc}") from exc
+
+
+def with_saved_settings(settings: Settings, saved: Optional["NotificationSettings"]) -> Settings:
+    """`settings` with a user's saved channel applied (US-35). No saved row = the .env values.
+
+    Only the channel and its destination are per user; the email sender, Resend key and
+    SMTP login always come from .env.
+    """
+    if saved is None:
+        return settings
+    from dataclasses import replace
+
+    return replace(
+        settings,
+        notifier=saved.channel,
+        webhook_url=saved.webhook_url or "",
+        alert_email_to=saved.alert_email or "",
+    )
+
+
+def email_configured(settings: Settings) -> bool:
+    """Whether the server can send email at all (a sender plus Resend or SMTP in .env)."""
+    return bool(settings.alert_email_from and (settings.resend_api_key or settings.smtp_host))
 
 
 def build_notifier(settings: Settings) -> Notifier:

@@ -1,0 +1,18 @@
+{
+  "name": "shopping-research-assistant",
+  "private": true,
+  "description": "Web (and later mobile) front ends for the Shopping Research Assistant. The Python backend lives alongside, in shopping_assistant/.",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "api:generate": "npm run generate -w @shopping-assistant/api-client",
+    "api:typecheck": "npm run typecheck -w @shopping-assistant/api-client",
+    "web:dev": "npm run dev -w @shopping-assistant/web",
+    "web:build": "npm run build -w @shopping-assistant/web",
+    "web:start": "npm run start -w @shopping-assistant/web --",
+    "web:test": "npm run test -w @shopping-assistant/web",
+    "web:check": "npm run lint -w @shopping-assistant/web && npm run typecheck -w @shopping-assistant/web && npm run api:typecheck && npm run web:test"
+  }
+}
