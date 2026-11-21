@@ -11,7 +11,7 @@
 ---
 
 ## 1. System overview
-Two independent LangGraph graphs share a local SQLite watchlist:
+Two independent LangGraph graphs share the watchlist. In v1 it was a local SQLite file (`watchlist.db`, shown below); from v2 (Sprint 6) it is a local PostgreSQL database, see §5.
 
 ```
                 ┌──────────────── Graph 1: Research & Finalization (interactive) ────────────────┐
@@ -76,8 +76,9 @@ Two independent LangGraph graphs share a local SQLite watchlist:
 - FR-5.4 A URL that is already on the watchlist is not added again. The reply says it's already tracked.
 
 ### FR-5A Conversation persistence — BR-2
-- FR-5A.1 Checkpoint Graph 1 state with `SqliteSaver` in `checkpoints.db`, keyed by a thread ID.
+- FR-5A.1 Checkpoint Graph 1 state keyed by a thread ID: `SqliteSaver` in `checkpoints.db` in v1; `PostgresSaver` in the app database from v2.
 - FR-5A.2 The user can continue a previous research thread or start a new one.
+- FR-5A.3 (v2) Each thread belongs to one user. Another user's thread ID is treated as not found; it can't be read, continued or renamed.
 
 ## 3. Functional requirements — Graph 2: Price Monitor
 
@@ -118,6 +119,46 @@ AND current_price < COALESCE(last_notified_price, +∞)
 | 4. Start background monitor | Starts APScheduler at `CHECK_INTERVAL_HOURS`; runs until stopped |
 | 0. Quit | Exits cleanly |
 
+## 4A. HTTP API (v2, Sprints 7–8) — US-29 to US-33, US-35
+All endpoints are under `/api/v1`, documented in `source/packages/api-client/openapi.json` (also served at `/docs`). The API binds to 127.0.0.1 and allows only `WEB_ORIGINS` (CORS). No endpoint takes a user ID: the current user comes from one dependency (the default `admin` until BL-01).
+
+| Method & path | Purpose |
+|---|---|
+| `GET /health` | `{status, database}`; always 200 while the API runs |
+| `POST /threads` | New thread ID (nothing stored until the first message) |
+| `GET /threads` | My threads, newest first |
+| `GET /threads/{id}` | Messages (each assistant message that showed a comparison or listings carries them structured, for cards), latest comparison, chosen product, pending confirmation |
+| `POST /threads/{id}/messages` | Send a message; **Server-Sent Events**: `progress` (step starting) …, then one `result` (TurnResult) or `error` (ErrorBody) |
+| `GET /threads/{id}/confirmation` | The pending listings and suggested target (404 `no_pending_confirmation` if none) |
+| `POST /threads/{id}/confirmation` | `track` (selected listing numbers, optional target) or `cancel` |
+| `GET /watchlist`, `GET /watchlist/{id}` | Items with latest price/stock, lowest, target, last check, `needs_attention` |
+| `PATCH /watchlist/{id}` | `status` (active/paused) and/or `target_price` |
+| `DELETE /watchlist/{id}` | Delete the item and its history (204) |
+| `GET /watchlist/{id}/history` | Oldest first; the first lowest in-stock entry has `is_lowest` |
+| `POST /checks` | Start a price check of my active items; 202 with the run (`running`) at once |
+| `GET /checks`, `GET /checks/{id}` | Recorded runs, newest first: trigger, status, counts (active, checked, failed, alerts sent, alerts to retry), error |
+| `GET /checks/status` | The running check, the last ended one, and the worker's schedule (`worker_running`, `next_run_at`) |
+| `GET /settings/notifications` | Alert channel in use, `source` (`saved` or `env`), masked webhook URL, alert email, whether the server can send email |
+| `PUT /settings/notifications` | Save channel + destination; an omitted field keeps its saved value, null clears it |
+| `DELETE /settings/notifications` | Forget the saved channel; `.env` applies again (204) |
+| `POST /settings/notifications/test` | Send a test alert through the channel in use |
+
+- FR-11.1 Errors always use `{code, message, details}`. Codes: `validation_error` (422), `invalid_decision` (422, confirmation stays pending), `invalid_settings` (422), `not_found` (404; another user's thread, item or check is also "not found"), `no_pending_confirmation` (404/409), `thread_busy` (409, one turn per thread at a time), `check_running` (409, `details.running_check_id`), `notification_failed` (502), `not_configured` / `database_unavailable` (503), `internal_error` (500).
+- FR-11.2 An invalid confirmation (no listings, unknown or repeated number, target ≤ 0) is rejected before the graph runs, so it stays pending (the graph itself would treat it as a cancel).
+- FR-11.3 A failed turn is reported as an SSE `error` event; the conversation is unchanged and the message can be retried.
+- FR-11.4 The research endpoints need `ANTHROPIC_API_KEY`/`TAVILY_API_KEY`; the watchlist endpoints work without them.
+- FR-11.5 One price check runs at a time per user, whoever starts it (worker, API, CLI): a PostgreSQL session advisory lock keyed by user, held on its own connection so it is released if the process dies. A refused check is logged and not recorded. A run left `running` by a dead process is marked failed ("Interrupted") by the next check that gets the lock.
+- FR-11.6 The background worker (`shopping-assistant worker`) checks at start-up and every `CHECK_INTERVAL_HOURS`, builds a fresh monitor per run (so saved settings apply at once), writes a heartbeat every 60 s, and waits for a check in progress when stopped. The API treats a worker silent for 3 minutes as stopped. A failed run never stops the schedule.
+- FR-11.7 Per-user notification settings hold only the channel and its destination (webhook URL, alert email). The email sender, Resend key, SMTP login, LLM and search keys stay in `.env` and are never returned. The webhook URL is returned masked and redacted from delivery errors, since it carries a token. With nothing saved, `.env` applies (v1 behaviour).
+
+## 4B. Web app (v2, Sprints 8–10) — US-36 to US-42
+Next.js app in `source/apps/web`, all data through the typed API client; no business logic in the browser beyond input validation.
+- FR-12.1 Research (`/research?thread=<id>`): thread list, comparison cards with "Choose this", live progress, inline error with Retry, tracking form (listings with stock and verified/estimated labels, target pre-filled with the BRL-3 suggestion and validated). Reloading restores a pending confirmation.
+- FR-12.2 Watchlist (`/watchlist`): per item latest price or out of stock, lowest, target, status, last check, a warning after 2+ failed checks and a non-CAD flag; pause/resume, inline target edit, delete after an in-page confirmation, price history (line chart with the target as a reference line, the lowest in-stock check marked, out-of-stock checks hollow, hover tooltip, plus a table of every check). "Check now" starts a check, polls it, and follows a check already started by the worker or CLI.
+- FR-12.3 Settings (`/settings`): choose console / webhook / email (email disabled with an explanation when the server can't send it), enter the webhook URL or address, save, send a test alert, or go back to `.env`. A saved webhook URL is shown only masked; leaving the field empty keeps it.
+- FR-12.4 Every retailer and source link opens in a new tab with `rel="noopener noreferrer"`; no buy, cart or checkout controls or wording (BRL-1).
+- FR-12.5 A status line shows the last and next price check, or a banner when the API or the database is unreachable, with how to start it. The one web setting is `NEXT_PUBLIC_API_BASE_URL`.
+
 ## 5. Data model
 
 ### Pydantic schemas
@@ -127,10 +168,29 @@ AND current_price < COALESCE(last_notified_price, +∞)
 - `ScrapedPriceResult`: url, current_price?, currency="CAD", in_stock=False, extraction_method, error?
 - `TrackedItem`: mirrors the `tracked_items` row
 
-### SQLite (`watchlist.db`)
-**tracked_items**: id PK, product_name TEXT, retailer TEXT, url TEXT, currency TEXT DEFAULT 'CAD', initial_price REAL, target_price REAL, lowest_price_seen REAL, last_notified_price REAL NULL, status TEXT CHECK IN ('active','paused'), created_at DATETIME
+### PostgreSQL (v2, migrations `0001`–`0003`)
+All owned rows carry `user_id`; the repository (`UserStore`) filters every query by it (US-26). Until sign-in exists (BL-01) the app uses a single default user `admin` (seeded by 0001 as `owner`, renamed by `0002_rename_default_user_to_admin.sql`).
 
-**price_history**: id PK, item_id FK → tracked_items.id ON DELETE CASCADE, price REAL, in_stock BOOLEAN, checked_at DATETIME
+**users**: id PK, username UNIQUE, display_name, created_at TIMESTAMPTZ
+
+**tracked_items**: id PK, user_id FK → users ON DELETE CASCADE, product_name, retailer, url, currency DEFAULT 'CAD', initial_price DOUBLE PRECISION (≥ 0), target_price DOUBLE PRECISION (> 0), lowest_price_seen, last_notified_price NULL, status CHECK IN ('active','paused'), created_at TIMESTAMPTZ, last_check_at TIMESTAMPTZ NULL, last_check_error NULL, consecutive_failures INT DEFAULT 0. UNIQUE (user_id, url): a user tracks a page once; different users may track the same page.
+
+**price_history**: id PK, item_id FK → tracked_items ON DELETE CASCADE, price DOUBLE PRECISION, in_stock BOOLEAN, checked_at TIMESTAMPTZ. Owned through its item.
+
+**research_threads**: thread_id PK, user_id FK → users ON DELETE CASCADE, title, finalized_product NULL, created_at, updated_at TIMESTAMPTZ.
+
+**monitor_runs** (0003): id PK, user_id FK → users ON DELETE CASCADE, trigger CHECK IN ('schedule','api','cli'), status CHECK IN ('running','finished','failed'), started_at, finished_at NULL, active_items / checked / failed / alerts_sent / alerts_failed INT NULL, error NULL.
+
+**notification_settings** (0003): user_id PK FK → users ON DELETE CASCADE, channel CHECK IN ('console','webhook','email'), webhook_url NULL, alert_email NULL, updated_at.
+
+**worker_status** (0003, process-level, not owned): name PK, pid, started_at, heartbeat_at, interval_hours, next_run_at NULL, stopped_at NULL.
+
+**schema_migrations**: version PK, name, applied_at. Plus LangGraph's checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`), created by `PostgresSaver.setup()`.
+
+### SQLite (`watchlist.db`, v1 only)
+Same `tracked_items` and `price_history` columns without `user_id`, prices as REAL and timestamps as ISO text (UTC). Kept only as the source for the v1 data import.
+
+**v1 import (US-27):** `shopping-assistant db import-v1 [PATH]` (default `DATA_DIR/watchlist.db`) opens the file read-only and copies each item with its full history into the default user's watchlist in one transaction per item, preserving targets, status, lowest price, last notified price, check health and timestamps (text without an offset is read as UTC; files from before the Sprint 5 health columns are accepted). An item whose URL is already on the watchlist is skipped, so a second run imports nothing; an item that breaks a constraint (e.g. target 0) is skipped and reported. Research conversations (`checkpoints.db`) are not imported, and the output says so.
 
 ## 6. Configuration (`.env`)
 | Key | Purpose | Default |
@@ -138,12 +198,16 @@ AND current_price < COALESCE(last_notified_price, +∞)
 | ANTHROPIC_API_KEY | LLM access | — |
 | LLM_MODEL | Claude model ID | latest Claude model |
 | TAVILY_API_KEY | Search | — |
-| NOTIFIER | `console` / `webhook` / `email` | console |
-| WEBHOOK_URL | Discord/Slack/Telegram webhook | — |
+| NOTIFIER | `console` / `webhook` / `email` (a channel saved in the app overrides it, FR-11.7) | console |
+| WEBHOOK_URL | Discord/Slack/Telegram webhook (overridden by a saved one) | — |
 | RESEND_API_KEY or SMTP_HOST/PORT/USER/PASSWORD | Email transport | — |
 | ALERT_EMAIL_FROM / ALERT_EMAIL_TO | Email addresses | — |
-| DATA_DIR | SQLite location | `./data` |
-| CHECK_INTERVAL_HOURS | Monitor cadence | 6 |
+| DATABASE_URL | PostgreSQL app database (v2) | — |
+| TEST_DATABASE_URL | PostgreSQL test database; name must end in `_test` | — |
+| DATA_DIR | v1 SQLite location (import only) | `./data` |
+| CHECK_INTERVAL_HOURS | Monitor and worker cadence | 6 |
+| API_PORT / WEB_ORIGINS | API port; browser origins allowed by CORS | 8000 / `http://localhost:3000` |
+| NEXT_PUBLIC_API_BASE_URL (`apps/web/.env.local`) | Where the web app finds the API | `http://127.0.0.1:8000` |
 | DEFAULT_TARGET_DISCOUNT | Suggested target discount | 0.10 |
 
 ## 7. Notifications — FR-10

@@ -3,7 +3,6 @@
 import pytest
 from langchain_core.messages import AIMessage
 
-from shopping_assistant import database as db
 from shopping_assistant.graphs.monitor_graph import write_alert
 from shopping_assistant.models import ScrapedPriceResult
 from shopping_assistant.monitor import PriceMonitor
@@ -68,14 +67,17 @@ def good_llm():
 
 
 @pytest.fixture
-def setup(settings_factory):
+def setup(settings_factory, store):
+    """Settings plus the owner's store with an Amazon.ca and a Staples item.
+
+    PriceMonitor opens the same owner store from `settings.database_url`.
+    """
     settings = settings_factory()
-    path = db.init_db(settings.watchlist_db_path)
     ids = {
-        "amz": db.add_tracked_item(path, product_name=NAME, retailer="Amazon.ca", url=AMZ, initial_price=478.0, target_price=430.2),
-        "staples": db.add_tracked_item(path, product_name=NAME, retailer="Staples Canada", url=STAPLES, initial_price=479.99, target_price=430.2),
+        "amz": store.add_tracked_item(product_name=NAME, retailer="Amazon.ca", url=AMZ, initial_price=478.0, target_price=430.2),
+        "staples": store.add_tracked_item(product_name=NAME, retailer="Staples Canada", url=STAPLES, initial_price=479.99, target_price=430.2),
     }
-    return settings, path, ids
+    return settings, store, ids
 
 
 def monitor(settings, scraper, notifier=None, llm=None):
@@ -86,17 +88,17 @@ def monitor(settings, scraper, notifier=None, llm=None):
 
 
 async def test_no_drop_records_history_and_never_calls_llm(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     llm = good_llm()
     notifier = FakeNotifier()
     summary = await monitor(settings, FakeScraper({AMZ: (478.0, True), STAPLES: (485.0, True)}), notifier, llm).run_once()
 
     assert summary.active_items == 2 and summary.checked == 2 and not summary.failures
     assert summary.alerts_sent == [] and notifier.sent == [] and llm.calls == []  # NFR-2
-    assert [h.price for h in db.get_price_history(path, ids["staples"])] == [479.99, 485.0]
+    assert [h.price for h in store.get_price_history(ids["staples"])] == [479.99, 485.0]
 
 
-async def test_empty_watchlist(settings_factory):
+async def test_empty_watchlist(settings_factory, store):
     scraper = FakeScraper()
     summary = await monitor(settings_factory(), scraper).run_once()
     assert summary.active_items == 0 and scraper.calls == []
@@ -104,8 +106,8 @@ async def test_empty_watchlist(settings_factory):
 
 
 async def test_paused_items_are_not_checked(setup):
-    settings, path, ids = setup
-    db.update_status(path, ids["staples"], "paused")
+    settings, store, ids = setup
+    store.update_status(ids["staples"], "paused")
     scraper = FakeScraper({AMZ: (478.0, True)})
     await monitor(settings, scraper).run_once()
     assert scraper.calls == [[AMZ]]
@@ -115,7 +117,7 @@ async def test_paused_items_are_not_checked(setup):
 
 
 async def test_target_reached_sends_llm_alert_and_records_last_notified(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     llm, notifier = good_llm(), FakeNotifier()
     summary = await monitor(settings, FakeScraper({AMZ: (399.0, True), STAPLES: (479.99, True)}), notifier, llm).run_once()
 
@@ -124,15 +126,15 @@ async def test_target_reached_sends_llm_alert_and_records_last_notified(setup):
     subject, body = notifier.sent[0]
     assert subject == "Target price reached: Sony WH-1000XM6 now CA$399.00 at Amazon.ca"
     assert body.startswith("Sony WH-1000XM6 dropped to CA$399.00") and AMZ in body
-    assert db.get_tracked_item(path, ids["amz"]).last_notified_price == 399.0
-    assert db.get_tracked_item(path, ids["amz"]).lowest_price_seen == 399.0
+    assert store.get_tracked_item(ids["amz"]).last_notified_price == 399.0
+    assert store.get_tracked_item(ids["amz"]).lowest_price_seen == 399.0
     # The LLM got precomputed facts, not raw numbers to do maths on.
     assert '"percent_below_start": 16.5' in llm.calls[0][1].content
     assert "<- alert sent" in summary.render()
 
 
 async def test_new_low_above_target_alerts(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier()
     summary = await monitor(settings, FakeScraper({AMZ: (460.0, True), STAPLES: (479.99, True)}), notifier).run_once()
     assert [a.reason for a in summary.alerts_sent] == ["new_low"]
@@ -140,20 +142,20 @@ async def test_new_low_above_target_alerts(setup):
 
 
 async def test_out_of_stock_low_price_does_not_alert_or_set_low(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier()
     await monitor(settings, FakeScraper({AMZ: (350.0, False), STAPLES: (479.99, True)}), notifier).run_once()
     assert notifier.sent == []
-    item = db.get_tracked_item(path, ids["amz"])
+    item = store.get_tracked_item(ids["amz"])
     assert item.lowest_price_seen == 478.0  # OOS price recorded in history but not as the low
-    assert db.get_price_history(path, ids["amz"])[-1].in_stock is False
+    assert store.get_price_history(ids["amz"])[-1].in_stock is False
 
 
 # --- US-15: no duplicates ---------------------------------------------------------------
 
 
 async def test_same_price_twice_alerts_once_then_lower_again_alerts(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier()
     scraper = FakeScraper(
         {AMZ: (399.0, True), STAPLES: (479.99, True)},
@@ -170,14 +172,14 @@ async def test_same_price_twice_alerts_once_then_lower_again_alerts(setup):
 
 
 async def test_failed_delivery_is_retried_next_run(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier(fail_times=1)
     scraper = FakeScraper({AMZ: (399.0, True), STAPLES: (479.99, True)}, {AMZ: (399.0, True), STAPLES: (479.99, True)})
     m = monitor(settings, scraper, notifier)
 
     first = await m.run_once()
     assert first.alerts_sent == [] and [a.item.id for a in first.alerts_failed] == [ids["amz"]]
-    assert db.get_tracked_item(path, ids["amz"]).last_notified_price is None
+    assert store.get_tracked_item(ids["amz"]).last_notified_price is None
     assert "will be retried" in first.render()
 
     second = await m.run_once()
@@ -189,16 +191,16 @@ async def test_failed_delivery_is_retried_next_run(setup):
 
 
 async def test_failed_scrape_changes_nothing(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     summary = await monitor(settings, FakeScraper({AMZ: "crawl failed (status 307): PerimeterX", STAPLES: (479.99, True)})).run_once()
     assert summary.checked == 1
     assert [(f.item_id, f.error) for f in summary.failures] == [(ids["amz"], "crawl failed (status 307): PerimeterX")]
-    assert [h.price for h in db.get_price_history(path, ids["amz"])] == [478.0]
+    assert [h.price for h in store.get_price_history(ids["amz"])] == [478.0]
     assert "check failed (crawl failed" in summary.render()
 
 
 async def test_check_health_is_recorded_per_item(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     scraper = FakeScraper(
         {AMZ: "crawl failed (status 307)", STAPLES: (479.99, True)},
         {AMZ: "timeout", STAPLES: (479.99, True)},
@@ -207,25 +209,25 @@ async def test_check_health_is_recorded_per_item(setup):
     m = monitor(settings, scraper)
     await m.run_once()
     await m.run_once()
-    amz = db.get_tracked_item(path, ids["amz"])
+    amz = store.get_tracked_item(ids["amz"])
     assert amz.consecutive_failures == 2 and amz.last_check_error == "timeout"
-    assert db.get_tracked_item(path, ids["staples"]).consecutive_failures == 0
+    assert store.get_tracked_item(ids["staples"]).consecutive_failures == 0
     await m.run_once()
-    assert db.get_tracked_item(path, ids["amz"]).consecutive_failures == 0
+    assert store.get_tracked_item(ids["amz"]).consecutive_failures == 0
 
 
 async def test_page_showing_different_product_is_a_failure_not_an_alert(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier()
     scraper = FakeScraper({AMZ: (99.0, True, "Sony WH-CH520 Wireless Headphones"), STAPLES: (479.99, True)})
     summary = await monitor(settings, scraper, notifier).run_once()
     assert notifier.sent == []
     assert "different product" in summary.failures[0].error
-    assert [h.price for h in db.get_price_history(path, ids["amz"])] == [478.0]
+    assert [h.price for h in store.get_price_history(ids["amz"])] == [478.0]
 
 
 async def test_whole_scrape_run_crashing_is_reported_per_item(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
 
     async def broken(urls):
         raise RuntimeError("browser failed to launch")
@@ -249,7 +251,7 @@ async def test_whole_scrape_run_crashing_is_reported_per_item(setup):
     ],
 )
 async def test_alert_falls_back_to_template(setup, llm):
-    settings, path, ids = setup
+    settings, store, ids = setup
     notifier = FakeNotifier()
     await monitor(settings, FakeScraper({AMZ: (399.0, True), STAPLES: (479.99, True)}), notifier, llm).run_once()
     body = notifier.sent[0][1]
@@ -258,18 +260,29 @@ async def test_alert_falls_back_to_template(setup, llm):
 
 
 async def test_llm_alert_gets_link_appended_if_missing(setup):
-    settings, path, ids = setup
+    settings, store, ids = setup
     from shopping_assistant.models import PriceCheck
 
-    item = db.get_tracked_item(path, ids["amz"])
+    item = store.get_tracked_item(ids["amz"])
     check = PriceCheck(item=item, price=399.0, in_stock=True, previous_price=478.0, previous_lowest=478.0, reason="target_reached")
     llm = FakeAlertLLM(AIMessage([{"type": "thinking", "thinking": ""}, {"type": "text", "text": "Now CA$399.00 at Amazon.ca."}]))
     body, by_llm = await write_alert(check, llm)
     assert by_llm is True and body == f"Now CA$399.00 at Amazon.ca.\n{AMZ}"
 
 
-def test_monitor_requires_valid_notifier_config(settings_factory):
+def test_monitor_requires_valid_notifier_config(settings_factory, store):
     from shopping_assistant.config import ConfigError
 
     with pytest.raises(ConfigError, match="WEBHOOK_URL"):
         PriceMonitor(settings_factory(notifier="webhook"), scrape=FakeScraper(), alert_llm=None)
+
+
+def test_monitor_uses_saved_notification_settings(settings_factory, store):
+    from shopping_assistant.models import NotificationSettings
+    from shopping_assistant.tools.notifier import ConsoleNotifier, WebhookNotifier
+
+    settings = settings_factory(notifier="console")
+    assert isinstance(PriceMonitor(settings, scrape=FakeScraper(), alert_llm=None).notifier, ConsoleNotifier)
+    store.save_notification_settings(NotificationSettings(channel="webhook", webhook_url="https://hooks.slack.com/services/T/B/x"))
+    notifier = PriceMonitor(settings, scrape=FakeScraper(), alert_llm=None).notifier
+    assert isinstance(notifier, WebhookNotifier) and notifier.kind == "slack"

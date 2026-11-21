@@ -312,10 +312,10 @@ def test_render_comparison_without_optional_parts():
     assert "Sources:" not in text and "Reply with an option number" in text
 
 
-# --- US-03: resume via ResearchSession + SqliteSaver ---------------------------
+# --- US-03 / US-25: resume via ResearchSession + PostgresSaver ------------------
 
 
-def test_session_resumes_thread_across_restarts(settings_factory):
+def test_session_resumes_thread_across_restarts(settings_factory, store):
     settings = settings_factory()
 
     s1 = ResearchSession(settings, intent_llm=FakeLLM(explore("headphones")), research_llm=FakeLLM(COMPARISON), search=FakeSearch())
@@ -324,7 +324,7 @@ def test_session_resumes_thread_across_restarts(settings_factory):
     assert turn.comparison and turn.finalized_product is None
     s1.close()
 
-    # New process: fresh session, same DB files.
+    # New process: fresh session, same database.
     intent2 = FakeLLM(IntentDecision(intent="finalize_product", candidate_number=1, search_query="headphones"))
     s2 = ResearchSession(settings, intent_llm=intent2, research_llm=FakeLLM(), search=FakeSearch())
     threads = s2.list_threads()
@@ -340,10 +340,29 @@ def test_session_resumes_thread_across_restarts(settings_factory):
     s2.close()
 
 
-def test_session_rejects_empty_message(settings_factory):
+def test_session_rejects_empty_message(settings_factory, store):
     with ResearchSession(settings_factory(), intent_llm=FakeLLM(), research_llm=FakeLLM(), search=FakeSearch()) as s:
         with pytest.raises(ValueError):
             s.send(s.new_thread_id(), "   ")
+
+
+def test_session_refuses_another_users_thread(settings_factory, store, pg_database):
+    from shopping_assistant.database import ThreadAccessError
+
+    owner = ResearchSession(settings_factory(), intent_llm=FakeLLM(explore("headphones")),
+                            research_llm=FakeLLM(COMPARISON), search=FakeSearch())
+    thread = owner.new_thread_id()
+    owner.send(thread, "noise cancelling headphones")
+
+    alice = pg_database.for_user(pg_database.create_user("alice"))
+    other = ResearchSession(settings_factory(), store=alice, intent_llm=FakeLLM(explore("x")),
+                            research_llm=FakeLLM(COMPARISON), search=FakeSearch())
+    assert other.list_threads() == []
+    for attempt in (lambda: other.history(thread), lambda: other.pending_confirmation(thread),
+                    lambda: other.send(thread, "hello")):
+        with pytest.raises(ThreadAccessError):
+            attempt()
+    assert [role for role, _ in owner.history(thread)] == ["user", "assistant"]  # untouched
 
 
 def test_session_requires_anthropic_key(settings_factory):

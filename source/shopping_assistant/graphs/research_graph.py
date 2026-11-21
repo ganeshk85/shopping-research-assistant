@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Optional, Protocol, Sequence
 from urllib.parse import urlparse
 
@@ -28,7 +27,7 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import interrupt
 from pydantic import BaseModel
 
-from ..database import add_tracked_item, find_tracked_item_by_url
+from ..database import UserStore
 from ..models import (
     FollowUpAnswer,
     IntentDecision,
@@ -127,7 +126,7 @@ PURCHASE_DECLINE = (
 class TrackingDeps:
     """Dependencies for listing lookup and watchlist saving (FR-3 to FR-5)."""
 
-    db_path: Path
+    store: UserStore  # the current user's watchlist
     verify_prices: Callable[[list[str]], Sequence[ScrapedPriceResult]]
     default_discount: float = 0.10
     default_currency: str = "CAD"
@@ -370,7 +369,10 @@ def build_research_graph(
         return {
             "last_action": "researched",
             "last_comparison": comparison.model_dump(),
-            "messages": [AIMessage(render_comparison(comparison))],
+            # The structured comparison rides along for UIs (web cards); the model only sees the text.
+            "messages": [AIMessage(
+                render_comparison(comparison), additional_kwargs={"comparison": comparison.model_dump()}
+            )],
         }
 
     def finalize_product(state: ResearchState) -> dict:
@@ -439,7 +441,8 @@ def build_research_graph(
                 f"\n\n(I skipped {dropped} other result{'s' if dropped != 1 else ''} that didn't clearly "
                 "match this product or had an implausible price.)"
             )
-        return {"listings": [l.model_dump() for l in listings], "messages": [AIMessage(text)]}
+        dumped = [l.model_dump() for l in listings]
+        return {"listings": dumped, "messages": [AIMessage(text, additional_kwargs={"listings": dumped})]}
 
     def route_after_locate(state: ResearchState) -> str:
         return "confirm_tracking_terms" if state.get("listings") else END
@@ -487,12 +490,11 @@ def build_research_graph(
         saved_ids: list[int] = []
         lines = []
         for l in request["listings"]:
-            existing = find_tracked_item_by_url(tracking.db_path, l["url"])
+            existing = tracking.store.find_tracked_item_by_url(l["url"])
             if existing is not None:
                 lines.append(f"- {l['retailer']}: already on your watchlist (item #{existing.id}, {existing.status})")
                 continue
-            item_id = add_tracked_item(
-                tracking.db_path,
+            item_id = tracking.store.add_tracked_item(
                 product_name=l["product_name"],
                 retailer=l["retailer"],
                 url=l["url"],
@@ -512,7 +514,7 @@ def build_research_graph(
         )
         footer = (
             "I'll alert you when a price reaches your target or hits a new low while in stock. "
-            "Price checks run from the monitor (menu options 3 and 4)."
+            "Prices are checked by the price monitor, on its schedule or when you run a check."
             if saved_ids else ""
         )
         text = "\n".join([header, *lines] + (["", footer] if footer else []))

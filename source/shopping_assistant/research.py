@@ -1,9 +1,10 @@
 """Research session service: the UI-facing entry point for Graph 1.
 
 The CLI (and later a web API) calls this instead of touching LangGraph directly.
-Conversation state is checkpointed in `checkpoints.db` (SqliteSaver), keyed by
-thread ID; a small `research_threads` table in the watchlist DB lists threads
-so the user can resume one (US-03).
+Conversation state is checkpointed in Postgres (PostgresSaver on the shared pool),
+keyed by thread ID; the `research_threads` table lists each user's threads so they
+can resume one (US-03, US-25). A session belongs to one user (its `UserStore`):
+another user's thread ID raises `ThreadAccessError`.
 
 Tracking setup pauses the graph with `interrupt()` (FR-4). A paused thread exposes
 `pending_confirmation`; answer it with `confirm()`. Sending a normal message while
@@ -14,7 +15,6 @@ drop it).
 from __future__ import annotations
 
 import asyncio
-import sqlite3
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional, Sequence
@@ -22,8 +22,8 @@ from typing import Any, Callable, Optional, Sequence
 from langchain_core.messages import AIMessage, HumanMessage
 from langgraph.types import Command
 
-from . import database as db
 from .config import Settings
+from .database import UserStore, open_store
 from .graphs.research_graph import TrackingDeps, build_research_graph
 from .models import ScrapedPriceResult, TrackingDecision
 
@@ -32,6 +32,7 @@ from .models import ScrapedPriceResult, TrackingDecision
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
 ProgressCallback = Callable[[str], None]  # receives the name of each node as it finishes
+StepCallback = Callable[[str], None]  # receives the name of each node as it STARTS (for live progress)
 
 
 def build_llms(settings: Settings) -> tuple[Any, Any]:
@@ -77,11 +78,24 @@ class ResearchTurn:
     saved_item_ids: list[int] = field(default_factory=list)
 
 
+@dataclass
+class ThreadSnapshot:
+    """A thread's current state, for showing it again (e.g. when a web page reloads)."""
+
+    thread_id: str
+    # Oldest first: {"role", "text"} plus "comparison" / "listings" when the message showed one.
+    messages: list[dict]
+    comparison: Optional[dict] = None  # the latest comparison (numbered options)
+    finalized_product: Optional[dict] = None
+    pending_confirmation: Optional[dict] = None
+
+
 class ResearchSession:
     def __init__(
         self,
         settings: Settings,
         *,
+        store: Optional[UserStore] = None,
         intent_llm: Any = None,
         research_llm: Any = None,
         search: Any = None,
@@ -90,24 +104,22 @@ class ResearchSession:
         enable_tracking: bool = True,
     ) -> None:
         self.settings = settings
-        self.db_path = db.init_db(settings.watchlist_db_path)
+        # Check the API keys before touching the database, so the clearest error comes first.
         if intent_llm is None or research_llm is None:
             intent_llm, research_llm = build_llms(settings)
         if search is None:
             from .tools.search import ProductSearch
 
             search = ProductSearch(settings)
-        self._conn: Optional[sqlite3.Connection] = None
+        self.store = store or open_store(settings)
         if checkpointer is None:
-            from langgraph.checkpoint.sqlite import SqliteSaver
+            from langgraph.checkpoint.postgres import PostgresSaver
 
-            settings.checkpoints_db_path.parent.mkdir(parents=True, exist_ok=True)
-            self._conn = sqlite3.connect(settings.checkpoints_db_path, check_same_thread=False)
-            checkpointer = SqliteSaver(self._conn)
+            checkpointer = PostgresSaver(self.store.database.pool)
         tracking = None
         if enable_tracking:
             tracking = TrackingDeps(
-                db_path=self.db_path,
+                store=self.store,
                 verify_prices=verify_prices or default_price_verifier(settings),
                 default_discount=settings.default_target_discount,
                 default_currency=settings.default_currency,
@@ -121,23 +133,60 @@ class ResearchSession:
         return uuid.uuid4().hex[:12]
 
     def list_threads(self, limit: int = 20) -> list[dict]:
-        return db.list_research_threads(self.db_path, limit)
+        return self.store.list_research_threads(limit)
 
     def history(self, thread_id: str) -> list[tuple[str, str]]:
         """(role, text) pairs for a thread, oldest first."""
-        snapshot = self.graph.get_state(self._config(thread_id))
+        self.store.check_thread_access(thread_id)
+        return self._messages(self.graph.get_state(self._config(thread_id)))
+
+    def pending_confirmation(self, thread_id: str) -> Optional[dict]:
+        """The confirmation payload if this thread is paused waiting for one."""
+        self.store.check_thread_access(thread_id)
+        return self._pending(self.graph.get_state(self._config(thread_id)))
+
+    def snapshot(self, thread_id: str) -> ThreadSnapshot:
+        """Messages, latest comparison, chosen product and any pending confirmation, in one read."""
+        self.store.check_thread_access(thread_id)
+        state = self.graph.get_state(self._config(thread_id))
+        values = state.values or {}
+        return ThreadSnapshot(
+            thread_id=thread_id,
+            messages=self._chat_entries(state),
+            comparison=values.get("last_comparison"),
+            finalized_product=values.get("finalized_product"),
+            pending_confirmation=self._pending(state),
+        )
+
+    @staticmethod
+    def _messages(state: Any) -> list[tuple[str, str]]:
         out: list[tuple[str, str]] = []
-        for m in snapshot.values.get("messages", []):
+        for m in (state.values or {}).get("messages", []):
             if isinstance(m, HumanMessage):
                 out.append(("user", str(m.content)))
             elif isinstance(m, AIMessage):
                 out.append(("assistant", str(m.content)))
         return out
 
-    def pending_confirmation(self, thread_id: str) -> Optional[dict]:
-        """The confirmation payload if this thread is paused waiting for one."""
-        snapshot = self.graph.get_state(self._config(thread_id))
-        for intr in getattr(snapshot, "interrupts", ()) or ():
+    @staticmethod
+    def _chat_entries(state: Any) -> list[dict]:
+        out: list[dict] = []
+        for m in (state.values or {}).get("messages", []):
+            if isinstance(m, HumanMessage):
+                out.append({"role": "user", "text": str(m.content)})
+            elif isinstance(m, AIMessage):
+                extra = m.additional_kwargs or {}
+                out.append({
+                    "role": "assistant",
+                    "text": str(m.content),
+                    "comparison": extra.get("comparison"),
+                    "listings": extra.get("listings"),
+                })
+        return out
+
+    @staticmethod
+    def _pending(state: Any) -> Optional[dict]:
+        for intr in getattr(state, "interrupts", ()) or ():
             value = getattr(intr, "value", None)
             if isinstance(value, dict) and value.get("type") == "confirm_tracking":
                 return value
@@ -145,29 +194,49 @@ class ResearchSession:
 
     # -- turns ---------------------------------------------------------------
 
-    def send(self, thread_id: str, text: str, on_progress: Optional[ProgressCallback] = None) -> ResearchTurn:
+    def send(
+        self,
+        thread_id: str,
+        text: str,
+        on_progress: Optional[ProgressCallback] = None,
+        on_step: Optional[StepCallback] = None,
+    ) -> ResearchTurn:
         text = text.strip()
         if not text:
             raise ValueError("Message is empty.")
         if self.pending_confirmation(thread_id):
             # Explicitly cancel so the conversation records it (see module docstring).
             self.confirm(thread_id, TrackingDecision(action="cancel"))
-        db.upsert_research_thread(self.db_path, thread_id, title=text)
-        return self._run(thread_id, {"messages": [HumanMessage(text)]}, on_progress)
+        self.store.upsert_research_thread(thread_id, title=text)
+        return self._run(thread_id, {"messages": [HumanMessage(text)]}, on_progress, on_step)
 
     def confirm(
-        self, thread_id: str, decision: TrackingDecision, on_progress: Optional[ProgressCallback] = None
+        self,
+        thread_id: str,
+        decision: TrackingDecision,
+        on_progress: Optional[ProgressCallback] = None,
+        on_step: Optional[StepCallback] = None,
     ) -> ResearchTurn:
         """Answer a pending tracking confirmation (FR-4)."""
         if not self.pending_confirmation(thread_id):
             raise RuntimeError("There is no tracking confirmation waiting in this conversation.")
-        return self._run(thread_id, Command(resume=decision.model_dump()), on_progress)
+        return self._run(thread_id, Command(resume=decision.model_dump()), on_progress, on_step)
 
-    def _run(self, thread_id: str, graph_input: Any, on_progress: Optional[ProgressCallback]) -> ResearchTurn:
+    def _run(
+        self,
+        thread_id: str,
+        graph_input: Any,
+        on_progress: Optional[ProgressCallback],
+        on_step: Optional[StepCallback] = None,
+    ) -> ResearchTurn:
         config = self._config(thread_id)
         before = len(self.graph.get_state(config).values.get("messages", []))
-        for chunk in self.graph.stream(graph_input, config, stream_mode="updates"):
-            if on_progress:
+        # "tasks" events mark when each node starts (they carry "input"); "updates" when it finishes.
+        for mode, chunk in self.graph.stream(graph_input, config, stream_mode=["updates", "tasks"]):
+            if mode == "tasks":
+                if on_step and "input" in chunk:
+                    on_step(chunk["name"])
+            elif on_progress:
                 for node in chunk:
                     if not node.startswith("__"):
                         on_progress(node)
@@ -181,7 +250,7 @@ class ResearchSession:
         chose_product = pending is not None or last_action in ("finalized", "no_listings", "tracking_saved")
         finalized = state.get("finalized_product") if chose_product else None
         if finalized:
-            db.upsert_research_thread(self.db_path, thread_id, title="", finalized_product=finalized["name"])
+            self.store.upsert_research_thread(thread_id, title="", finalized_product=finalized["name"])
         return ResearchTurn(
             thread_id=thread_id,
             reply=reply,
@@ -193,9 +262,7 @@ class ResearchSession:
         )
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
+        """Nothing to release: the connection pool is shared for the whole process."""
 
     def __enter__(self) -> "ResearchSession":
         return self

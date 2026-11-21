@@ -101,6 +101,50 @@ class PriceHistoryEntry(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Price-check runs, the background worker, notification settings (v2)
+# ---------------------------------------------------------------------------
+
+CheckTrigger = Literal["schedule", "api", "cli"]
+CheckRunStatus = Literal["running", "finished", "failed"]
+NotifierChannel = Literal["console", "webhook", "email"]
+
+
+class CheckRun(BaseModel):
+    """One price check of a user's active items (a `monitor_runs` row)."""
+
+    id: int
+    trigger: CheckTrigger
+    status: CheckRunStatus
+    started_at: datetime
+    finished_at: Optional[datetime] = None
+    active_items: Optional[int] = None
+    checked: Optional[int] = None
+    failed: Optional[int] = None
+    alerts_sent: Optional[int] = None
+    alerts_failed: Optional[int] = Field(default=None, description="Not delivered; retried at the next check.")
+    error: Optional[str] = None
+
+
+class WorkerStatus(BaseModel):
+    name: str
+    pid: int
+    started_at: datetime
+    heartbeat_at: datetime
+    interval_hours: int
+    next_run_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+
+
+class NotificationSettings(BaseModel):
+    """A user's saved alert channel. Secrets stay in .env."""
+
+    channel: NotifierChannel
+    webhook_url: Optional[str] = None
+    alert_email: Optional[str] = None
+    updated_at: Optional[datetime] = None
+
+
+# ---------------------------------------------------------------------------
 # LangGraph states
 # ---------------------------------------------------------------------------
 
@@ -149,16 +193,19 @@ class IntentDecision(BaseModel):
     )
 
 
+# What a turn did (set by the last node that ran). Also part of the API contract.
+LastAction = Literal[
+    "researched", "answered", "finalized", "asked", "error", "declined",
+    "no_listings", "tracking_saved", "tracking_cancelled",
+]
+
+
 class ResearchState(TypedDict, total=False):
     """Graph 1 state. Comparisons/products are stored as plain dicts (checkpoint-safe)."""
 
     messages: Annotated[list[AnyMessage], add_messages]
     intent: Intent
-    # What this turn did (set by the last node that ran).
-    last_action: Literal[
-        "researched", "answered", "finalized", "asked", "error", "declined",
-        "no_listings", "tracking_saved", "tracking_cancelled",
-    ]
+    last_action: LastAction
     search_query: str
     candidate_number: Optional[int]
     product_name: Optional[str]
